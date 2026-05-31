@@ -1,0 +1,31 @@
+# Stage 2 — 2D Object Detection Configuration
+method: rtdetr
+
+output_dir: ./outputs/detections/object
+
+model:
+  local_files_only: true   # Set to true after first download
+  name: PekingU/rtdetr_r50vd
+  cache_dir: ./models          # HuggingFace weights cached here on first run
+  confidence_threshold: 0.5   # Detections below this are discarded
+
+# COCO → KITTI class mapping
+# RT-DETR is pretrained on COCO — we filter and remap to KITTI classes.
+# Only COCO classes listed here will appear in output; all others are dropped.
+#
+# Ambiguous mappings are documented explicitly:
+#   COCO 'truck' loosely covers KITTI 'Car', 'Van', and 'Truck'.
+#   KITTI 'Van' has no clean COCO equivalent.
+#   Decision: map truck/bus → 'Car' (dominant KITTI class, simplest baseline).
+#   Revisit if Stage 3 produces 3D boxes with implausible l/w/h for large vehicles.
+
+
+class_mapping:
+  car:        Car
+  person:     Pedestrian
+  # bicycle and motorcycle removed — mapped to Cyclist but causes too many
+  # false positives from parked bikes. Re-enable after fine-tuning on KITTI. in case back add in stage 3 yaml
+  # bicycle:    Cyclist
+  # motorcycle: Cyclist
+  truck:      Car
+  bus:        Car

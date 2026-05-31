@@ -1,0 +1,9 @@
+# Base configuration for stereo_v2v pipeline
+
+data:
+  data_root: ./data/kitti/detection
+  tracking_root: ./data/kitti/tracking
+  split: training
+  
+mlflow:
+  tracking_uri: ./mlruns

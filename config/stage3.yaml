@@ -1,0 +1,56 @@
+# Stage 3 — Lift to 3D Bounding Boxes Configuration
+# Lifts 2D detections + disparity map → 3D bounding boxes
+# Method can be extended in future iterations via method field
+
+method: lift_v1
+output_dir: ./outputs/boxes3d
+
+# Disparity source — switch between sgbm and waft without touching stage3_lift.py
+disp_dir: ./outputs/depth/sgbm
+
+min_valid_pixels: 10          # Skip box if fewer valid depth pixels than this
+                              # Prevents garbage boxes from empty frustums
+# percentile_75 outperforms median for sparse SGBM depth:
+# background pixels have lower disparity (farther) than the object.
+# Taking 75th percentile biases toward foreground over background clutter.
+# Validated: depth_err dropped from ~10m to ~1m on sample 000003.
+
+# --- Heading estimation ---
+# Wired into stage3_lift.py — swap method here without touching lift logic
+heading_method: ray_angle     # arctan2(cx_2d - cx, fx) — viewing ray angle
+                              # Approximate baseline, validated via mean_heading_error
+                              # Future options: imu_prior, learned_angle
+
+
+# --- Class priors (KITTI training set mean dimensions) ---
+# Source: KITTI 3D Object Detection benchmark statistics
+# Used for: l always (cannot estimate from monocular), w/h as fallback
+class_priors:
+  Car:
+    l: 4.20
+    w: 1.90
+    h: 1.56
+    w_min: 0.5    # narrowest plausible car
+    w_max: 3.5    # widest plausible car (van/truck)
+    h_min: 0.5
+    h_max: 2.5
+  Pedestrian:
+    l: 0.80
+    w: 0.80
+    h: 1.76
+    w_min: 0.2    # child
+    w_max: 1.2    # large person with luggage
+    h_min: 0.8
+    h_max: 2.5
+
+    
+matching:
+  iou_threshold:
+    Car: 0.5
+    Pedestrian: 0.2
+
+
+
+
+
+

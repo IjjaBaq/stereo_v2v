@@ -1,0 +1,23 @@
+opencv-python
+numpy
+matplotlib
+pyyaml
+mlflow
+torch
+torchvision
+tqdm
+pytest
+transformers
+open3d
+shapely  
+
+# --- Stage 1: WAFT-Stereo Submodule Dependencies ---
+-r models/WAFT-Stereo/requirements.txt
+xformers
+
+
+# --- Install notes ---
+# For CPU-only (no GPU), install everything in one shot:
+#  pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+

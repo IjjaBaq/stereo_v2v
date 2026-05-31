@@ -1,0 +1,30 @@
+# Stage 1 — Stereo Depth Estimation Configuration
+# Method can be switched to 'raft' in a future iteration
+method: sgbm
+
+# precomputed disparsities on Colab
+precomputed_dir: ./outputs/depth/object/waft
+
+# Depth clipping: pixels beyond this distance are set to np.nan.
+# Set to null to disable clipping (honest GT comparison).
+max_depth_m: null
+
+sgbm:
+  min_disparity: 0
+  num_disparities: 192       # Must be divisible by 16
+  block_size: 11             # Odd number, 3–11 typical
+  p1: 8                      # Smoothness penalty (small discontinuities).
+                             # Intentionally low: KITTI has sharp depth
+                             # discontinuities at object boundaries — high
+                             # smoothness penalties hurt accuracy here.
+                             # P2 must always be > P1.
+  p2: 32                     # Smoothness penalty (large discontinuities).
+  disp12_max_diff: 1         # Max allowed difference in left-right check
+  pre_filter_cap: 63         # Truncation for prefiltered image pixels
+  uniqueness_ratio: 10       # Margin for best vs second-best match (%)
+  speckle_window_size: 100   # Max area of speckle regions to remove
+  speckle_range: 32          # Max disparity variation within speckle
+  mode: HH                   # HH = full dynamic programming (slower, better)
+
+  
+

@@ -4,11 +4,13 @@ __pycache__/
 *$py.class
 stereo_v2v_env/
 
-# Data & Outputs (The heavy stuff)
+# Data & Outputs
 data/
 outputs/
-*.npy
-*.png
-*.jpg
+models/
+mlruns/
 
-
+# Misc
+*.log
+.env
+.pytest_cache/
