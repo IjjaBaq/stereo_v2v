@@ -10,16 +10,39 @@ disp_dir: ./outputs/depth/sgbm
 
 min_valid_pixels: 10          # Skip box if fewer valid depth pixels than this
                               # Prevents garbage boxes from empty frustums
-# percentile_75 outperforms median for sparse SGBM depth:
-# background pixels have lower disparity (farther) than the object.
-# Taking 75th percentile biases toward foreground over background clutter.
-# Validated: depth_err dropped from ~10m to ~1m on sample 000003.
+
+# Depth sampling strategy.
+# validate_stage3_lift.py overrides this per method (percentile_75 for sgbm,
+# percentile_90 for waft). This default applies when running stage3_lift.py
+# standalone with sgbm output.
+depth_sampling: percentile_75
+
+# ROI refinement — removes ground/road contamination from dense depth maps.
+# validate_stage3_lift.py overrides these per method (1.0/null for sgbm,
+# 0.40/6.0 for waft). Defaults here are safe for standalone sgbm use.
+# crop_top_frac: keep only the top fraction of the box height.
+# min_depth_m: gate out disparity values closer than this distance.
+crop_top_frac: 1.0
+min_depth_m: null
 
 # --- Heading estimation ---
 # Wired into stage3_lift.py — swap method here without touching lift logic
-heading_method: ray_angle     # arctan2(cx_2d - cx, fx) — viewing ray angle
-                              # Approximate baseline, validated via mean_heading_error
-                              # Future options: imu_prior, learned_angle
+# heading_method: ray_angle     # ray_angle: arctan2(cx_2d - cx, fx) — viewing ray
+                              #   angle. Baseline; assumes alpha=0, so it has a
+                              #   systematic error (~146deg) for road-aligned
+                              #   vehicles whose true orientation isn't the ray.
+                              # learned: predicts allocentric alpha from the image
+                              #   crop (utils/orientation.py) and recovers
+                              #   rotation_y = alpha + ray_angle. Needs the trained
+                              #   checkpoint below. Falls back to ray_angle if the
+                              #   checkpoint or crop image is unavailable.
+heading_method: learned
+
+
+# Checkpoint for heading_method: learned — train on Colab via
+# scripts/train_orientation.py, then download here (path matches
+# config/orientation.yaml checkpoint_path).
+orientation_checkpoint: ./models/orientation/convnext_tiny_alpha.pth
 
 
 # --- Class priors (KITTI training set mean dimensions) ---

@@ -18,44 +18,17 @@ from pathlib import Path
 import cv2
 import mlflow
 import numpy as np
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.calib import extract_stereo_params
+from utils.config_loader import load_configs
 from utils.kitti_loader import load_calib, load_image
 
 logger = logging.getLogger(__name__)
 
 random.seed(42)
 np.random.seed(42)
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-def load_configs(base_path: str, stage_path: str) -> tuple[dict, dict]:
-    """Load and return base and stage YAML configs.
-
-    Args:
-        base_path: Path to config/base.yaml.
-        stage_path: Path to config/stage1.yaml.
-
-    Returns:
-        Tuple of (base_cfg, stage_cfg) as plain dicts.
-
-    Raises:
-        FileNotFoundError: If either config file is missing.
-    """
-    for p in (base_path, stage_path):
-        if not Path(p).exists():
-            raise FileNotFoundError(f"Config file not found: {p}")
-    with open(base_path) as f:
-        base_cfg = yaml.safe_load(f)
-    with open(stage_path) as f:
-        stage_cfg = yaml.safe_load(f)
-    return base_cfg, stage_cfg
 
 
 # ---------------------------------------------------------------------------

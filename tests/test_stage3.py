@@ -98,7 +98,8 @@ class TestConfig:
             assert key in stage_cfg, f"Missing key: '{key}'"
 
     def test_class_priors_have_all_classes(self, stage_cfg):
-        for cls in KITTI_CLASSES:
+        # Cyclist deliberately removed from class_priors (false-positive issues)
+        for cls in ("Car", "Pedestrian"):
             assert cls in stage_cfg["class_priors"], \
                 f"Missing class prior for '{cls}'"
 

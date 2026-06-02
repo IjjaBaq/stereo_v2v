@@ -9,7 +9,7 @@ import pytest
 
 from utils.kitti_loader import load_calib, load_disparity_gt, load_image, load_labels, load_sample
 
-DATA_ROOT = "./data/kitti"
+DATA_ROOT = "./data/kitti/detection"
 SPLIT = "training"
 SAMPLE_ID = "000000"
 

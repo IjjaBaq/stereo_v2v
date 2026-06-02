@@ -139,6 +139,8 @@ def run_inference(model, left_bgr: np.ndarray, right_bgr: np.ndarray) -> np.ndar
         output = model.inference(sample, size=None)
 
     disp = output['disp_pred'][0].cpu().numpy().astype(np.float32)
+    
+    
     disp[disp < 0.5] = np.nan
     return disp
 

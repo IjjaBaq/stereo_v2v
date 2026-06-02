@@ -16,12 +16,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.calib import extract_stereo_params
-from utils.geometry import compute_heading, unproject_box
+from utils.config_loader import load_configs
+from utils.geometry import compute_heading, recover_rotation_y, unproject_box
 from utils.kitti_loader import load_calib
 
 logger = logging.getLogger(__name__)
@@ -29,32 +29,25 @@ logger = logging.getLogger(__name__)
 random.seed(42)
 np.random.seed(42)
 
+# Orientation models cached by checkpoint path — loaded once, reused across
+# frames (e.g. a tracking sequence). torch/timm are imported lazily here so
+# the common sgbm + ray_angle path never pays the import cost.
+_ORIENTATION_CACHE: dict = {}
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
-def load_configs(base_path: str, stage_path: str) -> tuple[dict, dict]:
-    """Load base and stage YAML configs.
+def _get_orientation_model(ckpt_path: str):
+    """Load (and cache) a trained orientation model.
 
     Args:
-        base_path: Path to config/base.yaml.
-        stage_path: Path to config/stage3.yaml.
+        ckpt_path: Path to the orientation checkpoint .pth.
 
     Returns:
-        Tuple of (base_cfg, stage_cfg).
-
-    Raises:
-        FileNotFoundError: If either config file is missing.
+        Tuple of (model, meta) from utils.orientation.load_orientation_model.
     """
-    for p in (base_path, stage_path):
-        if not Path(p).exists():
-            raise FileNotFoundError(f"Config file not found: {p}")
-    with open(base_path) as f:
-        base_cfg = yaml.safe_load(f)
-    with open(stage_path) as f:
-        stage_cfg = yaml.safe_load(f)
-    return base_cfg, stage_cfg
+    if ckpt_path not in _ORIENTATION_CACHE:
+        from utils.orientation import load_orientation_model
+        _ORIENTATION_CACHE[ckpt_path] = load_orientation_model(ckpt_path)
+    return _ORIENTATION_CACHE[ckpt_path]
 
 
 # ---------------------------------------------------------------------------
@@ -67,8 +60,20 @@ def sample_depth(
     focal_length: float,
     baseline: float,
     method: str = "percentile_75",
+    crop_top_frac: float = 1.0,
+    min_depth_m: float | None = None,
 ) -> tuple[float, int]:
     """Sample metric depth from disparity map within a 2D box ROI.
+
+    Two optional filters remove ground/road contamination before sampling:
+        crop_top_frac — keeps only the top fraction of the box height,
+            discarding ground pixels that appear in the lower portion.
+        min_depth_m — nulls out pixels with disparity > f*B/min_depth_m,
+            removing implausibly-close hits (road surface, nearby clutter).
+    Both are no-ops at their defaults (1.0 / None).
+
+    valid_pixel_count is measured after the vertical crop but before the
+    disparity gate, so it remains a stable coverage proxy for confidence.
 
     Supports 'median' and any 'percentile_N' where N is an integer 0-100.
 
@@ -79,6 +84,11 @@ def sample_depth(
         baseline: Stereo baseline in metres.
         method: Sampling strategy — 'median' or 'percentile_N' (e.g.
                 'percentile_75', 'percentile_90').
+        crop_top_frac: Fraction of box height to keep from the top.
+                       1.0 = no crop (default). 0.65 = top 65%.
+        min_depth_m: Gate out disparity values corresponding to depths
+                     closer than this (disparity > f*B/min_depth_m).
+                     None = no gate (default).
 
     Returns:
         Tuple of (Z_metres, valid_pixel_count).
@@ -91,6 +101,10 @@ def sample_depth(
     x2 = min(disp.shape[1], int(box2d["x2"]))
     y2 = min(disp.shape[0], int(box2d["y2"]))
 
+    # Vertical crop: keep top fraction of box height to reject ground pixels
+    if crop_top_frac < 1.0:
+        y2 = min(disp.shape[0], y1 + max(1, int((y2 - y1) * crop_top_frac)))
+
     roi         = disp[y1:y2, x1:x2]
     valid_mask  = ~np.isnan(roi)
     valid_count = int(valid_mask.sum())
@@ -99,6 +113,18 @@ def sample_depth(
         return float("nan"), 0
 
     valid_vals = roi[valid_mask]
+
+    # Disparity gate: remove pixels closer than min_depth_m
+    if min_depth_m is not None and min_depth_m > 0:
+        max_disp   = (focal_length * baseline) / min_depth_m
+        valid_vals = valid_vals[valid_vals <= max_disp]
+        if len(valid_vals) == 0:
+            logger.debug(
+                "sample_depth: gate removed all %d valid pixels "
+                "(min_depth_m=%.1fm → max_disp=%.1fpx)",
+                valid_count, min_depth_m, max_disp,
+            )
+            return float("nan"), valid_count
 
     if method == "median":
         d_sample = float(np.median(valid_vals))
@@ -184,6 +210,7 @@ def lift_boxes(
     disp: np.ndarray,
     calib: dict,
     stage_cfg: dict,
+    image: np.ndarray | None = None,
 ) -> tuple[list[dict], dict]:
     """Lift all 2D detections to 3D bounding boxes.
 
@@ -192,6 +219,8 @@ def lift_boxes(
         disp: Disparity map, shape (H, W), float32.
         calib: Calibration dict from load_calib or load_tracking_calib.
         stage_cfg: Loaded stage3.yaml config dict.
+        image: Optional left BGR image, shape (H, W, 3). Required only for
+               heading_method='learned' (the orientation head crops it).
 
     Returns:
         Tuple of (boxes3d, skip_reason_counts).
@@ -200,8 +229,28 @@ def lift_boxes(
     focal_length, baseline   = extract_stereo_params(calib)
     min_valid_px             = int(stage_cfg["min_valid_pixels"])
     depth_sampling           = stage_cfg["depth_sampling"]
+    crop_top_frac            = float(stage_cfg.get("crop_top_frac", 1.0))
+    min_depth_m              = stage_cfg.get("min_depth_m", None)
     heading_method           = stage_cfg["heading_method"]
     class_priors             = stage_cfg["class_priors"]
+
+    # Learned heading setup — load the orientation model once, with a safe
+    # fallback to ray_angle if the crop image or checkpoint is unavailable.
+    orient_model    = None
+    orient_crop_sz  = 224
+    if heading_method == "learned":
+        ckpt = stage_cfg.get("orientation_checkpoint")
+        if image is None:
+            logger.warning("heading_method='learned' but no image provided "
+                           "— falling back to ray_angle")
+            heading_method = "ray_angle"
+        elif not ckpt or not Path(ckpt).exists():
+            logger.warning("heading_method='learned' but checkpoint missing "
+                           "(%s) — falling back to ray_angle", ckpt)
+            heading_method = "ray_angle"
+        else:
+            orient_model, ometa = _get_orientation_model(ckpt)
+            orient_crop_sz      = int(ometa["crop_size"])
 
     boxes3d:      list[dict]      = []
     skip_reasons: dict[str, int]  = {}
@@ -214,7 +263,10 @@ def lift_boxes(
         )
 
         Z, valid_count = sample_depth(
-            disp, box2d, focal_length, baseline, method=depth_sampling
+            disp, box2d, focal_length, baseline,
+            method=depth_sampling,
+            crop_top_frac=crop_top_frac,
+            min_depth_m=min_depth_m,
         )
 
         if valid_count < min_valid_px:
@@ -233,8 +285,18 @@ def lift_boxes(
         X, Y_center, Z, _, _ = unproject_box(box2d, Z, P2)
         l_3d, w_3d, h_3d     = estimate_dimensions(box2d, Z, P2, label,
                                                     class_priors)
-        cx_2d   = (box2d["x1"] + box2d["x2"]) / 2.0
-        heading = compute_heading(cx_2d, P2, method=heading_method)
+        cx_2d = (box2d["x1"] + box2d["x2"]) / 2.0
+        if heading_method == "learned":
+            from utils.orientation import predict_alpha
+            x1c = max(0, int(box2d["x1"]))
+            y1c = max(0, int(box2d["y1"]))
+            x2c = min(image.shape[1], int(box2d["x2"]))
+            y2c = min(image.shape[0], int(box2d["y2"]))
+            crop  = image[y1c:y2c, x1c:x2c]
+            alpha = predict_alpha(orient_model, crop, orient_crop_sz)
+            heading = recover_rotation_y(alpha, cx_2d, P2)
+        else:
+            heading = compute_heading(cx_2d, P2, method=heading_method)
 
         coverage_ratio = valid_count / box_area
         confidence_3d  = round(conf_2d * coverage_ratio, 4)
@@ -271,6 +333,7 @@ def run(
     boxes2d: list[dict] | None = None,
     calib: dict | None = None,
     output_dir_override: str | None = None,
+    image: np.ndarray | None = None,
 ) -> dict:
     """Run Stage 3 for a single sample.
 
@@ -284,6 +347,9 @@ def run(
         boxes2d: Optional pre-computed 2D detections. Skips disk load.
         calib: Optional pre-loaded calibration dict. Skips load_calib.
         output_dir_override: Optional full output directory override.
+        image: Optional left BGR image. Used only by heading_method='learned'.
+               If None and learned heading is requested, the object-split
+               image is loaded from disk.
 
     Returns:
         Dict with keys: sample_id, boxes, n_input_boxes, n_skipped,
@@ -333,7 +399,18 @@ def run(
     if calib is None:
         calib = load_calib(data_root, split, sample_id)
 
-    boxes3d, skip_reasons = lift_boxes(boxes2d, disp, calib, stage_cfg)
+    # Learned heading needs the left image — load the object-split frame if a
+    # caller (e.g. tracking validation) hasn't already supplied one.
+    if image is None and stage_cfg.get("heading_method") == "learned":
+        from utils.kitti_loader import load_image
+        try:
+            image = load_image(data_root, split, "image_2", sample_id, suffix=".png")
+        except FileNotFoundError:
+            logger.warning("Learned heading requested but image for %s not "
+                           "found — lift_boxes will fall back to ray_angle",
+                           sample_id)
+
+    boxes3d, skip_reasons = lift_boxes(boxes2d, disp, calib, stage_cfg, image=image)
 
     n_input   = len(boxes2d)
     n_skipped = sum(skip_reasons.values())

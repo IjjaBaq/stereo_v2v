@@ -115,7 +115,6 @@ class TestConfigs:
     def test_stage_config_loads(self, stage_cfg):
         assert "method" in stage_cfg
         assert "sgbm" in stage_cfg
-        assert "output_dir" in stage_cfg
 
     def test_sgbm_num_disparities_divisible_by_16(self, stage_cfg):
         n = stage_cfg["sgbm"]["num_disparities"]

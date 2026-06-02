@@ -1,27 +1,21 @@
 """KITTI Tracking dataset loader.
 
-Loads stereo image pairs, 3D labels, calibration, and oxts ego-motion
-from the KITTI Tracking benchmark for end-to-end pipeline evaluation.
+Loads stereo image pairs, 3D labels, and calibration from the KITTI Tracking
+benchmark for end-to-end Stage 1-3 evaluation.
 
 Dataset structure expected:
     data/kitti/tracking/training/
     ├── image_02/{seq_id}/{frame_id}.png   left images
     ├── image_03/{seq_id}/{frame_id}.png   right images
     ├── label_02/{seq_id}.txt              3D labels (all frames)
-    ├── calib/{seq_id}.txt                 calibration
-    └── oxts/{seq_id}.txt                  ego-motion (one line per frame)
+    └── calib/{seq_id}.txt                 calibration
 
 Label format (space-separated per line):
     frame track_id class truncated occluded alpha
     x1 y1 x2 y2 h w l x y z rotation_y
-
-oxts format (space-separated per line, one line per frame):
-    lat lon alt roll pitch yaw vn ve vf vl vu ax ay az af al au wx wy wz
-    pos_accuracy vel_accuracy navstat numsats posmode velmode orimode
 """
 
 import logging
-import math
 from pathlib import Path
 
 import cv2
@@ -30,11 +24,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 KITTI_CLASSES = ("Car", "Van", "Truck", "Pedestrian", "Cyclist")
-
-# oxts field indices
-_LAT, _LON, _ALT = 0, 1, 2
-_ROLL, _PITCH, _YAW = 3, 4, 5
-_VF = 8   # forward velocity m/s
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +75,11 @@ def load_tracking_calib(
 ) -> dict:
     """Load calibration for a tracking sequence.
 
-    Tracking calib format matches detection except Tr_velo_cam is absent
-    and keys use R_rect instead of R0_rect.
+    The tracking calib file mixes two line formats: P0–P3 use a colon
+    separator (``P2: ...``) while R_rect / Tr_velo_cam / Tr_imu_velo are
+    space-separated (``R_rect ...``). Both are parsed; only the projection
+    matrices and stereo geometry are returned (the extrinsics are unused now
+    that Stage 4 runs on CARLA).
 
     Args:
         tracking_root: Path to data/kitti/tracking.
@@ -95,7 +87,9 @@ def load_tracking_calib(
         seq_id: Zero-padded 4-digit sequence ID.
 
     Returns:
-        Dict with keys: P2, P3, R_rect, baseline_m, focal_length_px.
+        Dict with keys:
+            P2, P3 (np.ndarray 3x4): camera projection matrices.
+            focal_length_px (float), baseline_m (float).
 
     Raises:
         FileNotFoundError: If calib file is missing.
@@ -108,12 +102,21 @@ def load_tracking_calib(
     with open(path) as f:
         for line in f:
             line = line.strip()
-            if not line or ":" not in line:
+            if not line:
                 continue
-            key, val = line.split(":", 1)
-            data[key.strip()] = np.array(
-                [float(x) for x in val.split()], dtype=np.float64
-            )
+            if ":" in line:
+                key, val = line.split(":", 1)
+            else:
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                key, val = parts
+            try:
+                data[key.strip()] = np.array(
+                    [float(x) for x in val.split()], dtype=np.float64
+                )
+            except ValueError:
+                continue
 
     P2 = data["P2"].reshape(3, 4)
     P3 = data["P3"].reshape(3, 4)
@@ -232,124 +235,6 @@ def get_sequence_length(
 
 
 # ---------------------------------------------------------------------------
-# oxts ego-motion
-# ---------------------------------------------------------------------------
-
-def load_oxts_frame(
-    tracking_root: str,
-    split: str,
-    seq_id: str,
-    frame_id: int,
-) -> dict:
-    """Load oxts IMU/GPS data for a single frame.
-
-    Args:
-        tracking_root: Path to data/kitti/tracking.
-        split: 'training' or 'testing'.
-        seq_id: Zero-padded 4-digit sequence ID.
-        frame_id: Integer frame index (0-based line number).
-
-    Returns:
-        Dict with keys: lat, lon, alt, roll, pitch, yaw, forward_vel_ms.
-
-    Raises:
-        FileNotFoundError: If oxts file is missing.
-        IndexError: If frame_id exceeds number of lines.
-    """
-    path = Path(tracking_root) / split / "oxts" / f"{seq_id}.txt"
-    if not path.exists():
-        raise FileNotFoundError(f"oxts file not found: {path}")
-
-    with open(path) as f:
-        lines = f.readlines()
-
-    if frame_id >= len(lines):
-        raise IndexError(
-            f"frame_id={frame_id} exceeds oxts length={len(lines)} "
-            f"for seq={seq_id}"
-        )
-
-    vals = [float(x) for x in lines[frame_id].strip().split()]
-
-    return {
-        "lat":            vals[_LAT],
-        "lon":            vals[_LON],
-        "alt":            vals[_ALT],
-        "roll":           vals[_ROLL],
-        "pitch":          vals[_PITCH],
-        "yaw":            vals[_YAW],
-        "forward_vel_ms": vals[_VF],
-    }
-
-
-def compute_ego_transform(
-    oxts_a: dict,
-    oxts_b: dict,
-) -> np.ndarray:
-    """Compute rigid transform from frame B to frame A's coordinate system.
-
-    Uses the Mercator projection approach from the KITTI odometry devkit.
-    Frame A is treated as the world origin.
-
-    Args:
-        oxts_a: oxts dict for frame A (origin / Vehicle A).
-        oxts_b: oxts dict for frame B (Vehicle B to transform).
-
-    Returns:
-        4x4 homogeneous transform matrix T such that:
-            p_A = T @ p_B
-        where p_A, p_B are 3D points in their respective camera frames.
-    """
-    EARTH_RADIUS = 6378137.0  # WGS84 equatorial radius in metres
-
-    def mercator_xy(lat, lon, lat0):
-        """Project lat/lon to metric XY relative to lat0."""
-        scale = math.cos(math.radians(lat0))
-        x = scale * math.radians(lon) * EARTH_RADIUS
-        y = scale * EARTH_RADIUS * math.log(
-            math.tan(math.pi / 4 + math.radians(lat) / 2)
-        )
-        return x, y
-
-    lat0 = oxts_a["lat"]
-
-    xa, ya = mercator_xy(oxts_a["lat"], oxts_a["lon"], lat0)
-    xb, yb = mercator_xy(oxts_b["lat"], oxts_b["lon"], lat0)
-
-    # Translation in world (ENU) frame
-    dx = xb - xa   # east
-    dy = yb - ya   # north
-    dz = oxts_b["alt"] - oxts_a["alt"]
-
-    # Yaw difference (rotation around up axis)
-    dyaw = oxts_b["yaw"] - oxts_a["yaw"]
-
-    # Rotation matrix Rz(-dyaw) — transforms B's heading to A's frame
-    cos_y = math.cos(-dyaw)
-    sin_y = math.sin(-dyaw)
-    R = np.array([
-        [ cos_y, -sin_y, 0.0],
-        [ sin_y,  cos_y, 0.0],
-        [ 0.0,    0.0,   1.0],
-    ], dtype=np.float64)
-
-    # Translation vector rotated into A's frame
-    t_world = np.array([dx, dy, dz], dtype=np.float64)
-    t_a     = R @ t_world
-
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = R
-    T[:3,  3] = t_a
-
-    logger.debug(
-        "Ego transform — dx=%.2fm dy=%.2fm dz=%.2fm dyaw=%.4frad",
-        dx, dy, dz, dyaw,
-    )
-
-    return T
-
-
-# ---------------------------------------------------------------------------
 # Convenience: load full frame bundle
 # ---------------------------------------------------------------------------
 
@@ -375,8 +260,7 @@ def load_tracking_frame(
             left  (BGR ndarray),
             right (BGR ndarray),
             calib (dict),
-            labels (list of label dicts),
-            oxts  (dict).
+            labels (list of label dicts).
     """
     return {
         "seq_id":   seq_id,
@@ -388,5 +272,4 @@ def load_tracking_frame(
         "calib":    load_tracking_calib(tracking_root, split, seq_id),
         "labels":   load_tracking_labels(
                         tracking_root, split, seq_id, frame_id, classes),
-        "oxts":     load_oxts_frame(tracking_root, split, seq_id, frame_id),
     }

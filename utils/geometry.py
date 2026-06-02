@@ -114,6 +114,55 @@ def compute_heading(
     )
 
 
+def wrap_to_pi(angle: float) -> float:
+    """Wrap an angle in radians to the range [-pi, pi].
+
+    Args:
+        angle: Angle in radians.
+
+    Returns:
+        Equivalent angle in [-pi, pi].
+    """
+    return float((angle + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def recover_rotation_y(
+    alpha: float,
+    cx_2d: float,
+    P2: np.ndarray,
+) -> float:
+    """Recover global heading (rotation_y) from a learned local angle alpha.
+
+    The 'learned' heading method splits the orientation into two parts:
+        alpha     — the allocentric / observation angle, predicted by an
+                    appearance model from the object's image crop. This is
+                    the only part a crop can determine (it carries no
+                    information about where in the image the crop came from).
+        ray angle — the viewing-ray angle to the box center, atan2(x, z),
+                    which is purely geometric and identical to
+                    compute_heading(cx_2d, P2, 'ray_angle').
+
+    KITTI relation (verified on tracking seq 0000):
+        rotation_y = alpha + atan2(x, z)
+    where atan2(x, z) == atan2(cx_2d - cx, fx) since x/z = (cx_2d - cx)/fx.
+
+    This is the geometric counterpart to the learned head — the model
+    supplies alpha, this function adds back the ray term geometry already
+    knows. Replaces the ray_angle-only heading, which implicitly assumed
+    alpha = 0 and produced ~146 deg error for road-aligned vehicles.
+
+    Args:
+        alpha: Allocentric observation angle in radians (from the model).
+        cx_2d: Horizontal pixel coordinate of the 2D box center.
+        P2: Left camera projection matrix, shape (3, 4).
+
+    Returns:
+        Global heading rotation_y in radians, wrapped to [-pi, pi].
+    """
+    ray = compute_heading(cx_2d, P2, method="ray_angle")
+    return wrap_to_pi(alpha + ray)
+
+
 # ---------------------------------------------------------------------------
 # 3D IoU
 # ---------------------------------------------------------------------------
