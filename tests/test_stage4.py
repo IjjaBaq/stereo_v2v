@@ -33,8 +33,18 @@ def cfg():
 
 def _box(label="Car", x=0.0, z=10.0, conf=0.5, heading=0.0,
          y=1.0, l=4.2, w=1.8, h=1.5):
+    """Full 3D box (e.g. CARLA GT): x, y, z, l, w, h, heading."""
     return {"label": label, "x": x, "y": y, "z": z, "l": l, "w": w, "h": h,
             "heading": heading, "confidence": conf}
+
+
+# Stage-3 output schema — position only, no l/w/h/heading.
+_OPT_KEYS = ("l", "w", "h", "heading")
+
+
+def _pbox(label="Car", x=0.0, z=10.0, conf=0.5, y=1.0):
+    """Position-only box (Stage 3 output): x, y, z + label/confidence."""
+    return {"label": label, "x": x, "y": y, "z": z, "confidence": conf}
 
 
 # ---------------------------------------------------------------------------
@@ -195,3 +205,64 @@ class TestFuse:
         assert stats["n_a"] == 2 and stats["n_b"] == 1
         # every input is represented: fused pairs + leftovers
         assert stats["n_fused"] + stats["n_only_a"] == 2 - 0  # A's 2 accounted
+
+
+# ---------------------------------------------------------------------------
+# Schema-agnostic fusion — position-only (Stage 3) vs full 3D (CARLA GT)
+# ---------------------------------------------------------------------------
+
+class TestPositionOnlyBoxes:
+    """Stage-3 output: x, y, z only — no l/w/h/heading anywhere."""
+
+    def test_transform_no_heading(self):
+        T = np.eye(4)
+        T[0, 3] = 2.0
+        t = transform_box(_pbox(x=0.0, z=10.0), T)
+        assert t["x"] == pytest.approx(2.0)
+        assert "heading" not in t
+        assert all(k not in t for k in _OPT_KEYS)
+
+    def test_merge_stays_position_only(self):
+        m = merge_static_pair(_pbox(x=0.0, z=10.0, conf=0.6),
+                              _pbox(x=0.3, z=10.2, conf=0.5))
+        assert m["source"] == "fused"
+        assert m["confidence"] == pytest.approx(0.8, abs=1e-4)
+        assert m["x"] == pytest.approx((0.5 * 0.3) / 1.1, abs=1e-3)
+        assert all(k not in m for k in _OPT_KEYS)
+
+    def test_fuse_end_to_end(self, cfg):
+        a = [_pbox("Car", x=0, z=10, conf=0.6)]
+        b = [_pbox("Car", x=0.3, z=10.2, conf=0.5)]
+        out, stats = fuse(a, b, np.eye(4), cfg)
+        assert stats["n_fused"] == 1
+        assert len(out) == 1 and out[0]["source"] == "fused"
+        assert all(k not in out[0] for k in _OPT_KEYS)
+
+    def test_unmatched_position_only_kept(self, cfg):
+        a = [_pbox("Car", x=0, z=10)]
+        b = [_pbox("Car", x=50, z=10)]   # far apart → both unmatched
+        out, stats = fuse(a, b, np.eye(4), cfg)
+        assert stats["n_only_a"] == 1 and stats["n_only_b"] == 1
+        for o in out:
+            assert all(k not in o for k in _OPT_KEYS)
+            assert o["is_dynamic"] is False
+
+
+class TestFull3dBoxes:
+    """CARLA GT: full x, y, z, l, w, h, heading carried through fusion."""
+
+    def test_fuse_preserves_all_fields(self, cfg):
+        a = [_box("Car", x=0, z=10, conf=0.6, heading=0.1)]
+        b = [_box("Car", x=0.3, z=10.2, conf=0.5, heading=0.2)]
+        out, stats = fuse(a, b, np.eye(4), cfg)
+        assert stats["n_fused"] == 1
+        for k in _OPT_KEYS:
+            assert k in out[0], f"fused box missing '{k}'"
+
+    def test_unmatched_full_box_keeps_fields(self, cfg):
+        a = [_box("Car", x=0, z=10)]
+        b = [_box("Car", x=50, z=10)]   # far apart → both unmatched
+        out, _ = fuse(a, b, np.eye(4), cfg)
+        for o in out:
+            for k in _OPT_KEYS:
+                assert k in o, f"unmatched box missing '{k}'"

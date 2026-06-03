@@ -19,7 +19,9 @@
 
 ## Data Sources (two)
 - **KITTI** → real-image stereo for Stages 1-3 (depth → detect → lift). Only
-  non-synthetic camera data.
+  non-synthetic camera data. Stage 3 lifts each 2D detection to a 3D position
+  (x, y, z) + carries the source 2D box — no size/heading (not recoverable
+  from stereo at range). Validation matches preds↔GT by 3D center distance.
 - **CARLA** → full pipeline incl. Stage 4 V2V fusion (true simultaneous
   multi-agent; can also produce stereo for Stages 1-3). The CARLA loader
   (`utils/carla_loader.py`) is a documented STUB until a real export is wired in.
@@ -53,9 +55,6 @@
 - WAFT disparity output suspected incorrect — 100% coverage and
   depth range 2-8m regardless of scene. Likely wrong output tensor
   read in precompute_waft_disparity.py.
-- Heading estimation (theta_ray) systematic ~90° error for side-on vehicles.
-  Learned orientation head (utils/orientation.py) is EXPERIMENTAL / not
-  validated end-to-end — Stage 3 defaults to ray_angle.
 - Stage 3 only evaluated on tracking split — object split has misaligned
   stereo and detection frames (different scenes)
 - Stage 4 (`utils/carla_loader.py`, `validate_stage4_fusion.py`) is stubbed

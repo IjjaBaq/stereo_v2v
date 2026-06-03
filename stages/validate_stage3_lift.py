@@ -6,16 +6,15 @@ stereo pairs, 3D labels, and calibration are all aligned per frame.
 Computes:
     - Mean depth error       : mean |pred_z - gt_z|
     - Mean center distance   : mean sqrt(dx²+dy²+dz²)
-    - Mean heading error     : mean |pred_heading - gt_rotation_y|
-    - Mean 3D IoU            : via BEV polygon intersection + height overlap
-    - TP / FP / FN counts    : greedy matching by confidence, 2D IoU >= threshold
+    - TP / FP / FN counts    : greedy matching by ascending 3D center
+                               distance within class (<= max_dist)
 
 Produces per frame:
     - outputs/depth/tracking/{method}/{seq_id}/{frame_id:06d}_disp.npy
     - outputs/detections/tracking/{seq_id}/{frame_id:06d}_boxes2d.json
     - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_boxes3d.json
     - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_bev.png
-    - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_3d.png
+    - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_2d.png
 
 Produces per run:
     - outputs/boxes3d/{method}/{seq_id}/validation_results.json
@@ -46,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from stages.stage1_depth import run as run_stage1
 from stages.stage2_detect import load_model, run as run_stage2
 from stages.stage3_lift import load_configs, run as run_stage3
-from utils.geometry import box3d_iou, center_distance, project_box3d_to_image
+from utils.geometry import center_distance
 from utils.kitti_tracking_loader import load_tracking_frame
 
 logger = logging.getLogger(__name__)
@@ -123,59 +122,26 @@ def gt_label_to_box3d(obj: dict) -> dict:
     """Convert a KITTI tracking label to a 3D box dict.
 
     KITTI stores y = bottom of object in camera coordinates (Y points down).
-    Convert to center Y before computing metrics.
+    Convert to center Y before computing metrics. Stage 3 emits position +
+    2D box only, so size (l, w, h) and heading are dropped here to match.
 
     Args:
         obj: Label dict from load_tracking_labels with keys
-             x, y, z, l, w, h, rotation_y, x1, y1, x2, y2, label.
+             x, y, z, h, x1, y1, x2, y2, label.
 
     Returns:
-        3D box dict with keys x, y, z, l, w, h, heading,
-        x1, y1, x2, y2, label.
+        3D box dict with keys x, y, z, x1, y1, x2, y2, label.
     """
     return {
         "label":   obj["label"],
         "x":       obj["x"],
         "y":       obj["y"] - obj["h"] / 2.0,
         "z":       obj["z"],
-        "l":       obj["l"],
-        "w":       obj["w"],
-        "h":       obj["h"],
-        "heading": obj["rotation_y"],
         "x1":      obj["x1"],
         "y1":      obj["y1"],
         "x2":      obj["x2"],
         "y2":      obj["y2"],
     }
-
-
-# ---------------------------------------------------------------------------
-# 2D IoU
-# ---------------------------------------------------------------------------
-
-def box2d_iou(pred: dict, gt: dict) -> float:
-    """Compute 2D IoU between pred and gt using x1,y1,x2,y2 fields.
-
-    Args:
-        pred: Dict with keys x1, y1, x2, y2.
-        gt:   Dict with keys x1, y1, x2, y2.
-
-    Returns:
-        IoU value in [0, 1].
-    """
-    ix1 = max(pred["x1"], gt["x1"])
-    iy1 = max(pred["y1"], gt["y1"])
-    ix2 = min(pred["x2"], gt["x2"])
-    iy2 = min(pred["y2"], gt["y2"])
-
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    if inter == 0.0:
-        return 0.0
-
-    area_pred = (pred["x2"] - pred["x1"]) * (pred["y2"] - pred["y1"])
-    area_gt   = (gt["x2"]   - gt["x1"])   * (gt["y2"]   - gt["y1"])
-    union     = area_pred + area_gt - inter
-    return inter / union if union > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -185,21 +151,19 @@ def box2d_iou(pred: dict, gt: dict) -> float:
 def match_boxes(
     preds: list[dict],
     gts: list[dict],
-    iou_thresholds: dict[str, float] | None = None,
+    max_dist: dict[str, float] | None = None,
 ) -> tuple[list[tuple], list[int], list[int]]:
-    """Greedy matching of predictions to GT by confidence, class, 2D IoU.
+    """Greedy matching of predictions to GT by 3D center distance, per class.
 
-    Algorithm:
-        1. Sort predictions by confidence descending.
-        2. For each prediction find highest-IoU unmatched GT of same class.
-        3. If best IoU >= threshold → TP, mark GT matched.
-        4. Otherwise → FP.
-        5. Unmatched GT → FN.
+    Mirrors utils.fusion.match_boxes: build all same-class (pred, gt) pairs
+    within max_dist, sort by ascending 3D center distance, then greedily
+    take pairs whose pred and gt are both still unmatched.
 
     Args:
-        preds: Predicted 3D box dicts with x1,y1,x2,y2,label,confidence.
-        gts:   GT 3D box dicts with x1,y1,x2,y2,label.
-        iou_thresholds: Per-class minimum 2D IoU. Defaults to 0.5 per class.
+        preds: Predicted 3D box dicts with x, y, z, label.
+        gts:   GT 3D box dicts with x, y, z, label.
+        max_dist: Per-class max 3D center distance for a valid match.
+                  Missing classes default to 0.0 (never match).
 
     Returns:
         Tuple of (matches, fp_indices, fn_indices).
@@ -207,42 +171,30 @@ def match_boxes(
         fp_indices: Pred indices with no GT match.
         fn_indices: GT indices with no pred match.
     """
-    sorted_pred_idx = sorted(
-        range(len(preds)),
-        key=lambda i: preds[i]["confidence"],
-        reverse=True,
-    )
+    max_dist = max_dist or {}
 
-    matched_gt: set[int]           = set()
-    matches:    list[tuple[int,int]] = []
-    fp_indices: list[int]           = []
-
-    for pi in sorted_pred_idx:
-        pred     = preds[pi]
-        best_iou = 0.0
-        best_gi  = -1
-
+    candidates: list[tuple[float, int, int]] = []
+    for pi, pred in enumerate(preds):
         for gi, gt in enumerate(gts):
-            if gi in matched_gt:
+            if pred["label"] != gt["label"]:
                 continue
-            if gt["label"] != pred["label"]:
-                continue
-            iou = box2d_iou(pred, gt)
-            if iou > best_iou:
-                best_iou = iou
-                best_gi  = gi
+            d = center_distance(pred, gt)
+            if d <= float(max_dist.get(pred["label"], 0.0)):
+                candidates.append((d, pi, gi))
+    candidates.sort()
 
-        threshold = (
-            iou_thresholds.get(pred["label"], 0.5)
-            if iou_thresholds else 0.5
-        )
-        if best_iou >= threshold and best_gi >= 0:
-            matches.append((pi, best_gi))
-            matched_gt.add(best_gi)
-        else:
-            fp_indices.append(pi)
+    matched_pred: set[int]          = set()
+    matched_gt:   set[int]          = set()
+    matches:      list[tuple[int,int]] = []
+    for _d, pi, gi in candidates:
+        if pi in matched_pred or gi in matched_gt:
+            continue
+        matches.append((pi, gi))
+        matched_pred.add(pi)
+        matched_gt.add(gi)
 
-    fn_indices = [gi for gi in range(len(gts)) if gi not in matched_gt]
+    fp_indices = [pi for pi in range(len(preds)) if pi not in matched_pred]
+    fn_indices = [gi for gi in range(len(gts))   if gi not in matched_gt]
     return matches, fp_indices, fn_indices
 
 
@@ -263,21 +215,17 @@ def compute_metrics(
         matches: List of (pred_idx, gt_idx) TP pairs.
 
     Returns:
-        Dict with keys: mean_depth_err, mean_center_dist,
-        mean_heading_err, mean_iou3d. All nan if no matches.
+        Dict with keys: mean_depth_err, mean_center_dist.
+        Both nan if no matches.
     """
     if not matches:
         return {
             "mean_depth_err":   float("nan"),
             "mean_center_dist": float("nan"),
-            "mean_heading_err": float("nan"),
-            "mean_iou3d":       float("nan"),
         }
 
     depth_errs   = []
     center_dists = []
-    heading_errs = []
-    iou3d_vals   = []
 
     for pi, gi in matches:
         pred = preds[pi]
@@ -286,63 +234,15 @@ def compute_metrics(
         depth_errs.append(abs(pred["z"] - gt["z"]))
         center_dists.append(center_distance(pred, gt))
 
-        h_err = abs(pred["heading"] - gt["heading"])
-        h_err = min(h_err, 2 * math.pi - h_err)
-        heading_errs.append(h_err)
-
-        iou3d_vals.append(box3d_iou(pred, gt))
-
     return {
         "mean_depth_err":   float(np.mean(depth_errs)),
         "mean_center_dist": float(np.mean(center_dists)),
-        "mean_heading_err": float(np.mean(heading_errs)),
-        "mean_iou3d":       float(np.mean(iou3d_vals)),
     }
 
 
 # ---------------------------------------------------------------------------
 # Visualizations
 # ---------------------------------------------------------------------------
-
-def draw_bev_box(
-    ax: plt.Axes,
-    box: dict,
-    color: str,
-    label: str | None = None,
-) -> None:
-    """Draw a single 3D box footprint on a BEV axes.
-
-    Args:
-        ax: Matplotlib axes (BEV — X horizontal, Z vertical/depth).
-        box: 3D box dict with keys x, z, l, w, heading.
-        color: Matplotlib color string.
-        label: Optional text label at box center.
-    """
-    from matplotlib.patches import Polygon as MplPolygon
-
-    cx, cz = box["x"], box["z"]
-    l, w   = box["l"], box["w"]
-    yaw    = box["heading"]
-
-    corners_local = np.array([
-        [ w / 2,  l / 2],
-        [-w / 2,  l / 2],
-        [-w / 2, -l / 2],
-        [ w / 2, -l / 2],
-    ])
-    cos_h = math.cos(yaw)
-    sin_h = math.sin(yaw)
-    R     = np.array([[cos_h, -sin_h], [sin_h, cos_h]])
-    corners = corners_local @ R.T + np.array([cx, cz])
-
-    ax.add_patch(MplPolygon(
-        corners, closed=True,
-        edgecolor=color, facecolor="none", linewidth=1.5,
-    ))
-    if label:
-        ax.text(cx, cz, label, color=color, fontsize=6,
-                ha="center", va="center")
-
 
 def make_bev_visualization(
     pred_boxes: list[dict],
@@ -352,14 +252,16 @@ def make_bev_visualization(
     seq_id: str,
     output_path: Path,
 ) -> None:
-    """Render BEV visualization with predicted and GT boxes.
+    """Render a BEV scatter of predicted and GT 3D centers (X vs Z).
 
-    Predictions in green, matched GT in red, unmatched GT in orange.
-    Matched pairs connected with yellow dashed lines.
+    Stage 3 emits position only (no size/heading), so centers are drawn as
+    scatter points rather than rotated footprints. Predictions in green,
+    matched GT in red, unmatched GT in orange. Matched pairs are connected
+    with yellow dashed lines.
 
     Args:
-        pred_boxes: Predicted 3D box dicts.
-        gt_boxes:   GT 3D box dicts.
+        pred_boxes: Predicted 3D box dicts with keys x, z, label.
+        gt_boxes:   GT 3D box dicts with keys x, z, label.
         matches:    TP (pred_idx, gt_idx) pairs.
         frame_id:   Frame index for title.
         seq_id:     Sequence ID for title.
@@ -375,14 +277,16 @@ def make_bev_visualization(
     fig.patch.set_facecolor("#1a1a1a")
 
     for pi, box in enumerate(pred_boxes):
-        draw_bev_box(ax, box, color="#00ff88",
-                     label=f"{box['label'][0]}{pi}")
+        ax.scatter(box["x"], box["z"], c="#00ff88", marker="o", s=40)
+        ax.text(box["x"], box["z"], f" {box['label'][0]}{pi}",
+                color="#00ff88", fontsize=6, ha="left", va="center")
 
     matched_gt_idx = {gi for _, gi in matches}
     for gi, box in enumerate(gt_boxes):
         color = "#ff4444" if gi in matched_gt_idx else "#ff8800"
-        draw_bev_box(ax, box, color=color,
-                     label=f"{box['label'][0]}{gi}")
+        ax.scatter(box["x"], box["z"], c=color, marker="x", s=40)
+        ax.text(box["x"], box["z"], f" {box['label'][0]}{gi}",
+                color=color, fontsize=6, ha="left", va="center")
 
     for pi, gi in matches:
         p = pred_boxes[pi]
@@ -404,12 +308,9 @@ def make_bev_visualization(
 
     ax.legend(
         handles=[
-            mpatches.Patch(edgecolor="#00ff88", facecolor="none",
-                           label="Predicted"),
-            mpatches.Patch(edgecolor="#ff4444", facecolor="none",
-                           label="GT (matched)"),
-            mpatches.Patch(edgecolor="#ff8800", facecolor="none",
-                           label="GT (unmatched)"),
+            mpatches.Patch(color="#00ff88", label="Predicted center"),
+            mpatches.Patch(color="#ff4444", label="GT (matched)"),
+            mpatches.Patch(color="#ff8800", label="GT (unmatched)"),
         ],
         loc="upper right", facecolor="#333333",
         labelcolor="white", fontsize=8,
@@ -428,77 +329,50 @@ def make_bev_visualization(
     logger.info("Saved BEV → %s", output_path)
 
 
-def make_3d_projection_visualization(
+def make_2d_overlay_visualization(
     image: np.ndarray,
     pred_boxes: list[dict],
     gt_boxes: list[dict],
     matches: list[tuple[int, int]],
-    calib: dict,
     frame_id: int,
     seq_id: str,
     output_path: Path,
 ) -> None:
-    """Draw projected 3D boxes on the left camera image.
+    """Draw 2D boxes (x1,y1,x2,y2) on the left camera image.
 
-    Predictions in green, matched GT in dark red, unmatched GT in orange.
+    Stage 3 no longer emits 3D extents/heading, so this overlays the source
+    2D boxes instead of projected 3D wireframes. Predictions in green,
+    matched GT in dark red, unmatched GT in orange.
 
     Args:
         image: Left camera BGR image (H, W, 3) uint8.
-        pred_boxes: Predicted 3D box dicts.
-        gt_boxes:   GT 3D box dicts (Y converted to center).
+        pred_boxes: Predicted box dicts with x1,y1,x2,y2,label,confidence.
+        gt_boxes:   GT box dicts with x1,y1,x2,y2,label.
         matches:    TP (pred_idx, gt_idx) pairs.
-        calib:      Calibration dict with key P2.
         frame_id:   Frame index for overlay.
         seq_id:     Sequence ID for overlay.
         output_path: Path to save PNG.
     """
     import cv2
 
-    P2            = calib["P2"]
-    out           = image.copy()
-    h_img, w_img  = out.shape[:2]
+    out = image.copy()
 
-    # 12 edges of a 3D box — corners 0-3: top face, 4-7: bottom face
-    edges = [
-        (0,1),(1,2),(2,3),(3,0),
-        (4,5),(5,6),(6,7),(7,4),
-        (0,4),(1,5),(2,6),(3,7),
-    ]
-
-    def draw_box(corners_px, color, thickness=2):
-        if corners_px is None:
-            return
-        for i, j in edges:
-            pt1 = tuple(corners_px[i].tolist())
-            pt2 = tuple(corners_px[j].tolist())
-            if (abs(pt1[0]) > w_img * 3 or abs(pt1[1]) > h_img * 3 or
-                    abs(pt2[0]) > w_img * 3 or abs(pt2[1]) > h_img * 3):
-                continue
-            cv2.line(out, pt1, pt2, color, thickness, cv2.LINE_AA)
-
-    def draw_label(corners_px, text, color):
-        if corners_px is None:
-            return
-        top = corners_px[[0, 3]].mean(axis=0).astype(int)
-        cv2.putText(
-            out, text,
-            (int(top[0]), max(int(top[1]) - 5, 15)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA,
-        )
+    def draw_box(box, color, text):
+        x1, y1 = int(box["x1"]), int(box["y1"])
+        x2, y2 = int(box["x2"]), int(box["y2"])
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(out, text, (x1, max(y1 - 5, 15)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
     matched_gt_idx = {gi for _, gi in matches}
 
     for gi, gt in enumerate(gt_boxes):
-        corners_px = project_box3d_to_image(gt, P2)
-        color      = (50, 50, 255) if gi in matched_gt_idx else (0, 100, 255)
-        draw_box(corners_px, color)
-        draw_label(corners_px, f"GT:{gt['label']}", color)
+        color = (50, 50, 255) if gi in matched_gt_idx else (0, 100, 255)
+        draw_box(gt, color, f"GT:{gt['label']}")
 
-    for pi, pred in enumerate(pred_boxes):
-        corners_px = project_box3d_to_image(pred, P2)
-        draw_box(corners_px, (0, 220, 80))
-        draw_label(corners_px,
-                   f"{pred['label']} {pred['confidence']:.2f}", (0, 220, 80))
+    for pred in pred_boxes:
+        draw_box(pred, (0, 220, 80),
+                 f"{pred['label']} {pred['confidence']:.2f}")
 
     cv2.putText(out, f"seq {seq_id} frame {frame_id:06d}",
                 (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
@@ -509,7 +383,7 @@ def make_3d_projection_visualization(
                 (200, 200, 200), 1, cv2.LINE_AA)
 
     cv2.imwrite(str(output_path), out)
-    logger.info("Saved 3D projection → %s", output_path)
+    logger.info("Saved 2D overlay → %s", output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +480,6 @@ def validate_frame(
         boxes2d=s2["boxes"],
         calib=calib,
         output_dir_override=box3d_out,
-        image=frame["left"],   # enables heading_method='learned'
     )
 
     # GT — filter to active classes, convert Y to center
@@ -616,9 +489,9 @@ def validate_frame(
         if obj["label"] in KITTI_CLASSES
     ]
 
-    pred_boxes     = s3["boxes"]
-    iou_thresholds = stage3_cfg.get("matching", {}).get("iou_threshold", {})
-    matches, fp_idx, fn_idx = match_boxes(pred_boxes, gt_boxes, iou_thresholds)
+    pred_boxes = s3["boxes"]
+    max_dist   = stage3_cfg.get("matching", {}).get("max_dist", {})
+    matches, fp_idx, fn_idx = match_boxes(pred_boxes, gt_boxes, max_dist)
     metrics = compute_metrics(pred_boxes, gt_boxes, matches)
 
     n_tp = len(matches)
@@ -627,13 +500,10 @@ def validate_frame(
 
     logger.info(
         "seq=%s frame=%06d — TP=%d FP=%d FN=%d | "
-        "depth_err=%.2fm center_dist=%.2fm "
-        "heading_err=%.3frad iou3d=%.3f",
+        "depth_err=%.2fm center_dist=%.2fm",
         seq_id, frame_id, n_tp, n_fp, n_fn,
         metrics["mean_depth_err"]   if not math.isnan(metrics["mean_depth_err"])   else -1,
         metrics["mean_center_dist"] if not math.isnan(metrics["mean_center_dist"]) else -1,
-        metrics["mean_heading_err"] if not math.isnan(metrics["mean_heading_err"]) else -1,
-        metrics["mean_iou3d"]       if not math.isnan(metrics["mean_iou3d"])       else -1,
     )
 
     out_dir = Path(box3d_out)
@@ -642,10 +512,10 @@ def validate_frame(
         frame_id=frame_id, seq_id=seq_id,
         output_path=out_dir / f"{frame_id:06d}_bev.png",
     )
-    make_3d_projection_visualization(
-        frame["left"], pred_boxes, gt_boxes, matches, calib,
+    make_2d_overlay_visualization(
+        frame["left"], pred_boxes, gt_boxes, matches,
         frame_id=frame_id, seq_id=seq_id,
-        output_path=out_dir / f"{frame_id:06d}_3d.png",
+        output_path=out_dir / f"{frame_id:06d}_2d.png",
     )
 
     return {
@@ -716,7 +586,6 @@ if __name__ == "__main__":
         mlflow.log_param("n_frames",       len(args.frame_ids))
         mlflow.log_param("frame_ids",      str(args.frame_ids))
         mlflow.log_param("stage3_method",  stage3_cfg["method"])
-        mlflow.log_param("heading_method", stage3_cfg["heading_method"])
 
         for fid in args.frame_ids:
             try:
@@ -751,10 +620,7 @@ if __name__ == "__main__":
         }
 
         if valid:
-            for metric in (
-                "mean_depth_err", "mean_center_dist",
-                "mean_heading_err", "mean_iou3d",
-            ):
+            for metric in ("mean_depth_err", "mean_center_dist"):
                 vals = [r[metric] for r in valid
                         if not math.isnan(r.get(metric, float("nan")))]
                 agg  = float(np.mean(vals)) if vals else float("nan")
@@ -769,14 +635,11 @@ if __name__ == "__main__":
 
             logger.info(
                 "=== Validation Summary [seq=%s method=%s] === "
-                "depth_err=%.2fm center_dist=%.2fm "
-                "heading_err=%.3frad iou3d=%.3f | "
+                "depth_err=%.2fm center_dist=%.2fm | "
                 "TP=%d FP=%d FN=%d skipped=%d",
                 args.seq_id, args.method,
                 summary.get("mean_depth_err",   float("nan")),
                 summary.get("mean_center_dist", float("nan")),
-                summary.get("mean_heading_err", float("nan")),
-                summary.get("mean_iou3d",       float("nan")),
                 summary.get("n_tp",      0),
                 summary.get("n_fp",      0),
                 summary.get("n_fn",      0),

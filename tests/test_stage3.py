@@ -13,7 +13,6 @@ Requires:
 """
 
 import json
-import math
 from pathlib import Path
 
 import numpy as np
@@ -26,9 +25,7 @@ from stages.stage3_lift import (
     sample_depth,
 )
 from utils.geometry import (
-    box3d_iou,
     center_distance,
-    compute_heading,
     unproject_box,
 )
 from utils.kitti_loader import load_calib
@@ -94,34 +91,17 @@ class TestConfig:
 
     def test_stage_config_loads(self, stage_cfg):
         for key in ("method", "output_dir", "depth_sampling",
-                    "min_valid_pixels", "heading_method", "class_priors"):
+                    "min_valid_pixels", "matching"):
             assert key in stage_cfg, f"Missing key: '{key}'"
 
-    def test_class_priors_have_all_classes(self, stage_cfg):
-        # Cyclist deliberately removed from class_priors (false-positive issues)
+    def test_matching_max_dist_present(self, stage_cfg):
+        max_dist = stage_cfg["matching"]["max_dist"]
         for cls in ("Car", "Pedestrian"):
-            assert cls in stage_cfg["class_priors"], \
-                f"Missing class prior for '{cls}'"
-
-    def test_class_priors_have_dimensions(self, stage_cfg):
-        for cls, prior in stage_cfg["class_priors"].items():
-            for dim in ("l", "w", "h"):
-                assert dim in prior, f"Prior for '{cls}' missing '{dim}'"
-                assert prior[dim] > 0, f"Prior {cls}.{dim} must be positive"
+            assert cls in max_dist, f"Missing max_dist for '{cls}'"
+            assert max_dist[cls] > 0, f"max_dist[{cls}] must be positive"
 
     def test_min_valid_pixels_positive(self, stage_cfg):
         assert stage_cfg["min_valid_pixels"] > 0
-
-    def test_plausibility_bounds_consistent(self, stage_cfg):
-        for cls, prior in stage_cfg["class_priors"].items():
-            assert prior["w_min"] < prior["w_max"], \
-                f"{cls}: w_min must be < w_max"
-            assert prior["h_min"] < prior["h_max"], \
-                f"{cls}: h_min must be < h_max"
-            assert prior["w_min"] > 0, \
-                f"{cls}: w_min must be positive"
-            assert prior["h_min"] > 0, \
-                f"{cls}: h_min must be positive"
 
     def test_depth_sampling_method_is_supported(self, stage_cfg):
         supported = {"median", "percentile_75"}
@@ -187,68 +167,6 @@ class TestUnprojectBox:
         Y_center_B = Y_bottom - h_3d / 2.0
 
         assert Y_center_A == pytest.approx(Y_center_B, abs=1e-4)
-
-
-class TestComputeHeading:
-    @pytest.fixture(scope="class")
-    def P2(self):
-        p = np.zeros((3, 4), dtype=np.float32)
-        p[0, 0] = 721.0  # fx — KITTI typical
-        p[0, 2] = 609.0  # cx
-        return p
-
-    def test_center_heading_near_zero(self, P2):
-        cx = float(P2[0, 2])
-        heading = compute_heading(cx, P2)
-        assert abs(heading) < 0.01
-
-    def test_heading_in_range(self, P2):
-        for cx in [0, 300, 609, 900, 1240]:
-            h = compute_heading(float(cx), P2)
-            assert -math.pi <= h <= math.pi
-
-    def test_left_of_center_negative_heading(self, P2):
-        cx_left = float(P2[0, 2]) - 200.0
-        assert compute_heading(cx_left, P2) < 0.0
-
-    def test_right_of_center_positive_heading(self, P2):
-        cx_right = float(P2[0, 2]) + 200.0
-        assert compute_heading(cx_right, P2) > 0.0
-
-    def test_unsupported_method_raises(self, P2):
-        with pytest.raises(ValueError):
-            compute_heading(600.0, P2, method="unknown_method")
-
-
-class TestBox3dIou:
-    def _make_box(self, x, z, l, w, h=1.5, heading=0.0, y=0.0):
-        return {"x": x, "y": y, "z": z, "l": l, "w": w, "h": h,
-                "heading": heading}
-
-    def test_identical_boxes_iou_one(self):
-        box = self._make_box(0, 10, 4.0, 2.0)
-        assert box3d_iou(box, box) == pytest.approx(1.0, abs=1e-4)
-
-    def test_non_overlapping_iou_zero(self):
-        a = self._make_box(0,   10, 4.0, 2.0)
-        b = self._make_box(100, 10, 4.0, 2.0)
-        assert box3d_iou(a, b) == pytest.approx(0.0, abs=1e-4)
-
-    def test_iou_in_range(self):
-        a = self._make_box(0, 10, 4.0, 2.0)
-        b = self._make_box(1, 10, 4.0, 2.0)
-        iou = box3d_iou(a, b)
-        assert 0.0 <= iou <= 1.0
-
-    def test_iou_symmetric(self):
-        a = self._make_box(0, 10, 4.0, 2.0)
-        b = self._make_box(1, 11, 4.0, 2.0)
-        assert box3d_iou(a, b) == pytest.approx(box3d_iou(b, a), abs=1e-6)
-
-    def test_no_height_overlap_iou_zero(self):
-        a = self._make_box(0, 10, 4.0, 2.0, h=1.0, y=0.0)
-        b = self._make_box(0, 10, 4.0, 2.0, h=1.0, y=5.0)
-        assert box3d_iou(a, b) == pytest.approx(0.0, abs=1e-4)
 
 
 class TestCenterDistance:
@@ -337,45 +255,6 @@ class TestSampleDepth:
         assert Z_p75 < Z_med
 
 # ---------------------------------------------------------------------------
-# Dimension fallback tests
-# ---------------------------------------------------------------------------
-
-class TestDimensionFallback:
-    """Tests that implausible unprojected dimensions fall back to class priors."""
-
-    @pytest.fixture(scope="class")
-    def stage_cfg(self):
-        _, cfg = load_configs(BASE_CONFIG, STAGE_CONFIG)
-        return cfg
-
-  
-    def test_implausible_width_uses_prior(self, stage_cfg):
-        from stages.stage3_lift import estimate_dimensions
-        P2 = np.zeros((3, 4), dtype=np.float32)
-        P2[0, 0] = 721.0
-        P2[1, 1] = 721.0
-        # 1px wide box at Z=300m → w ≈ 0.42m — below Car w_min=0.5
-        box2d = {"x1": 100.0, "y1": 100.0, "x2": 101.0, "y2": 150.0}
-        _, w, _ = estimate_dimensions(box2d, Z=300.0, P2=P2,
-                                      label="Car",
-                                      class_priors=stage_cfg["class_priors"])
-        assert w == pytest.approx(stage_cfg["class_priors"]["Car"]["w"])
-
-    def test_implausible_height_uses_prior(self, stage_cfg):
-        """A tall box at tiny depth produces implausibly large h → prior used."""
-        from stages.stage3_lift import estimate_dimensions
-        P2 = np.zeros((3, 4), dtype=np.float32)
-        P2[0, 0] = 721.0
-        P2[1, 1] = 721.0
-        # box height = 500px at Z=10m → h ≈ 6.9m — above h_max
-        box2d = {"x1": 100.0, "y1": 0.0, "x2": 200.0, "y2": 500.0}
-        _, _, h = estimate_dimensions(box2d, Z=10.0, P2=P2,
-                                      label="Car",
-                                      class_priors=stage_cfg["class_priors"])
-        assert h == pytest.approx(stage_cfg["class_priors"]["Car"]["h"])
-
-
-# ---------------------------------------------------------------------------
 # Full pipeline output tests
 # ---------------------------------------------------------------------------
 
@@ -413,7 +292,7 @@ class TestStage3Output:
 class TestBoxes3d:
     def test_each_box_has_required_fields(self, boxes3d):
         required = {"label", "confidence", "x", "y", "z",
-                    "l", "w", "h", "heading", "x1", "y1", "x2", "y2"}
+                    "x1", "y1", "x2", "y2"}
         for i, box in enumerate(boxes3d):
             missing = required - box.keys()
             assert not missing, f"Box {i} missing fields: {missing}"
@@ -431,24 +310,6 @@ class TestBoxes3d:
         for box in boxes3d:
             assert 0.0 <= box["confidence"] <= 1.0, \
                 f"confidence={box['confidence']} out of range"
-
-    def test_heading_in_range(self, boxes3d):
-        for box in boxes3d:
-            assert -math.pi <= box["heading"] <= math.pi, \
-                f"heading={box['heading']} out of [-pi, pi]"
-
-    def test_dimensions_physically_plausible(self, boxes3d, stage_cfg):
-        """Bounds read from config — stays in sync if config is tuned."""
-        for box in boxes3d:
-            prior = stage_cfg["class_priors"][box["label"]]
-            assert prior["w_min"] <= box["w"] <= prior["w_max"], (
-                f"{box['label']}.w={box['w']:.3f} outside "
-                f"[{prior['w_min']}, {prior['w_max']}]"
-            )
-            assert prior["h_min"] <= box["h"] <= prior["h_max"], (
-                f"{box['label']}.h={box['h']:.3f} outside "
-                f"[{prior['h_min']}, {prior['h_max']}]"
-            )
 
     def test_2d_coords_present_and_valid(self, boxes3d):
         for box in boxes3d:

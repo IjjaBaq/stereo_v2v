@@ -25,52 +25,15 @@ depth_sampling: percentile_75
 crop_top_frac: 1.0
 min_depth_m: null
 
-# --- Heading estimation ---
-# Wired into stage3_lift.py — swap method here without touching lift logic
-# heading_method: ray_angle     # ray_angle: arctan2(cx_2d - cx, fx) — viewing ray
-                              #   angle. Baseline; assumes alpha=0, so it has a
-                              #   systematic error (~146deg) for road-aligned
-                              #   vehicles whose true orientation isn't the ray.
-                              # learned: predicts allocentric alpha from the image
-                              #   crop (utils/orientation.py) and recovers
-                              #   rotation_y = alpha + ray_angle. Needs the trained
-                              #   checkpoint below. Falls back to ray_angle if the
-                              #   checkpoint or crop image is unavailable.
-heading_method: learned
-
-
-# Checkpoint for heading_method: learned — train on Colab via
-# scripts/train_orientation.py, then download here (path matches
-# config/orientation.yaml checkpoint_path).
-orientation_checkpoint: ./models/orientation/convnext_tiny_alpha.pth
-
-
-# --- Class priors (KITTI training set mean dimensions) ---
-# Source: KITTI 3D Object Detection benchmark statistics
-# Used for: l always (cannot estimate from monocular), w/h as fallback
-class_priors:
-  Car:
-    l: 4.20
-    w: 1.90
-    h: 1.56
-    w_min: 0.5    # narrowest plausible car
-    w_max: 3.5    # widest plausible car (van/truck)
-    h_min: 0.5
-    h_max: 2.5
-  Pedestrian:
-    l: 0.80
-    w: 0.80
-    h: 1.76
-    w_min: 0.2    # child
-    w_max: 1.2    # large person with luggage
-    h_min: 0.8
-    h_max: 2.5
-
-    
+# --- Matching (validation) ---
+# Predictions and GT are matched by 3D center distance, per class — Stage 3
+# emits position + 2D box only (no size/heading), so IoU-based matching no
+# longer applies. A prediction matches the nearest unmatched same-class GT
+# within max_dist metres. Same convention as config/stage4.yaml.
 matching:
-  iou_threshold:
-    Car: 0.5
-    Pedestrian: 0.2
+  max_dist:
+    Car: 2.0
+    Pedestrian: 1.0
 
 
 

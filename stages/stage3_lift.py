@@ -10,7 +10,6 @@ Usage:
 import argparse
 import json
 import logging
-import math
 import random
 import sys
 from pathlib import Path
@@ -21,33 +20,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.calib import extract_stereo_params
 from utils.config_loader import load_configs
-from utils.geometry import compute_heading, recover_rotation_y, unproject_box
+from utils.geometry import unproject_box
 from utils.kitti_loader import load_calib
 
 logger = logging.getLogger(__name__)
 
 random.seed(42)
 np.random.seed(42)
-
-# Orientation models cached by checkpoint path — loaded once, reused across
-# frames (e.g. a tracking sequence). torch/timm are imported lazily here so
-# the common sgbm + ray_angle path never pays the import cost.
-_ORIENTATION_CACHE: dict = {}
-
-
-def _get_orientation_model(ckpt_path: str):
-    """Load (and cache) a trained orientation model.
-
-    Args:
-        ckpt_path: Path to the orientation checkpoint .pth.
-
-    Returns:
-        Tuple of (model, meta) from utils.orientation.load_orientation_model.
-    """
-    if ckpt_path not in _ORIENTATION_CACHE:
-        from utils.orientation import load_orientation_model
-        _ORIENTATION_CACHE[ckpt_path] = load_orientation_model(ckpt_path)
-    return _ORIENTATION_CACHE[ckpt_path]
 
 
 # ---------------------------------------------------------------------------
@@ -154,54 +133,6 @@ def sample_depth(
 
 
 # ---------------------------------------------------------------------------
-# Dimension estimation
-# ---------------------------------------------------------------------------
-
-def estimate_dimensions(
-    box2d: dict,
-    Z: float,
-    P2: np.ndarray,
-    label: str,
-    class_priors: dict,
-) -> tuple[float, float, float]:
-    """Estimate 3D dimensions for a detected object.
-
-    Width and height are unprojected from the 2D box size at depth Z.
-    Length always uses the class prior (cannot be estimated monocularly).
-    Plausibility bounds are per-class from config.
-
-    Args:
-        box2d: Dict with keys x1, y1, x2, y2.
-        Z: Metric depth in metres.
-        P2: Left camera projection matrix, shape (3, 4).
-        label: KITTI class name.
-        class_priors: Dict of {class: {l, w, h, w_min, w_max, h_min, h_max}}.
-
-    Returns:
-        Tuple of (l, w, h) in metres.
-    """
-    prior = class_priors[label]
-    fx    = float(P2[0, 0])
-    fy    = float(P2[1, 1])
-
-    w_3d = (box2d["x2"] - box2d["x1"]) * Z / fx
-    h_3d = (box2d["y2"] - box2d["y1"]) * Z / fy
-    l_3d = prior["l"]
-
-    if not (float(prior["w_min"]) <= w_3d <= float(prior["w_max"])):
-        logger.debug("Width %.3fm implausible for %s — using prior %.3fm",
-                     w_3d, label, prior["w"])
-        w_3d = prior["w"]
-
-    if not (float(prior["h_min"]) <= h_3d <= float(prior["h_max"])):
-        logger.debug("Height %.3fm implausible for %s — using prior %.3fm",
-                     h_3d, label, prior["h"])
-        h_3d = prior["h"]
-
-    return float(l_3d), float(w_3d), float(h_3d)
-
-
-# ---------------------------------------------------------------------------
 # Lifting pipeline
 # ---------------------------------------------------------------------------
 
@@ -210,17 +141,19 @@ def lift_boxes(
     disp: np.ndarray,
     calib: dict,
     stage_cfg: dict,
-    image: np.ndarray | None = None,
 ) -> tuple[list[dict], dict]:
-    """Lift all 2D detections to 3D bounding boxes.
+    """Lift all 2D detections to 3D positions.
+
+    Each lifted box carries the geometrically reliable quantities only:
+    the unprojected 3D center (x, y, z) and the source 2D box. Size and
+    heading are deliberately not estimated — they are not recoverable from
+    stereo geometry at range (see project notes).
 
     Args:
         boxes2d: List of 2D detection dicts from Stage 2.
         disp: Disparity map, shape (H, W), float32.
         calib: Calibration dict from load_calib or load_tracking_calib.
         stage_cfg: Loaded stage3.yaml config dict.
-        image: Optional left BGR image, shape (H, W, 3). Required only for
-               heading_method='learned' (the orientation head crops it).
 
     Returns:
         Tuple of (boxes3d, skip_reason_counts).
@@ -231,26 +164,6 @@ def lift_boxes(
     depth_sampling           = stage_cfg["depth_sampling"]
     crop_top_frac            = float(stage_cfg.get("crop_top_frac", 1.0))
     min_depth_m              = stage_cfg.get("min_depth_m", None)
-    heading_method           = stage_cfg["heading_method"]
-    class_priors             = stage_cfg["class_priors"]
-
-    # Learned heading setup — load the orientation model once, with a safe
-    # fallback to ray_angle if the crop image or checkpoint is unavailable.
-    orient_model    = None
-    orient_crop_sz  = 224
-    if heading_method == "learned":
-        ckpt = stage_cfg.get("orientation_checkpoint")
-        if image is None:
-            logger.warning("heading_method='learned' but no image provided "
-                           "— falling back to ray_angle")
-            heading_method = "ray_angle"
-        elif not ckpt or not Path(ckpt).exists():
-            logger.warning("heading_method='learned' but checkpoint missing "
-                           "(%s) — falling back to ray_angle", ckpt)
-            heading_method = "ray_angle"
-        else:
-            orient_model, ometa = _get_orientation_model(ckpt)
-            orient_crop_sz      = int(ometa["crop_size"])
 
     boxes3d:      list[dict]      = []
     skip_reasons: dict[str, int]  = {}
@@ -283,20 +196,6 @@ def lift_boxes(
             continue
 
         X, Y_center, Z, _, _ = unproject_box(box2d, Z, P2)
-        l_3d, w_3d, h_3d     = estimate_dimensions(box2d, Z, P2, label,
-                                                    class_priors)
-        cx_2d = (box2d["x1"] + box2d["x2"]) / 2.0
-        if heading_method == "learned":
-            from utils.orientation import predict_alpha
-            x1c = max(0, int(box2d["x1"]))
-            y1c = max(0, int(box2d["y1"]))
-            x2c = min(image.shape[1], int(box2d["x2"]))
-            y2c = min(image.shape[0], int(box2d["y2"]))
-            crop  = image[y1c:y2c, x1c:x2c]
-            alpha = predict_alpha(orient_model, crop, orient_crop_sz)
-            heading = recover_rotation_y(alpha, cx_2d, P2)
-        else:
-            heading = compute_heading(cx_2d, P2, method=heading_method)
 
         coverage_ratio = valid_count / box_area
         confidence_3d  = round(conf_2d * coverage_ratio, 4)
@@ -307,10 +206,6 @@ def lift_boxes(
             "x":          round(X,        3),
             "y":          round(Y_center, 3),
             "z":          round(Z,        3),
-            "l":          round(l_3d,     3),
-            "w":          round(w_3d,     3),
-            "h":          round(h_3d,     3),
-            "heading":    round(heading,  4),
             "x1": box2d["x1"],
             "y1": box2d["y1"],
             "x2": box2d["x2"],
@@ -333,7 +228,6 @@ def run(
     boxes2d: list[dict] | None = None,
     calib: dict | None = None,
     output_dir_override: str | None = None,
-    image: np.ndarray | None = None,
 ) -> dict:
     """Run Stage 3 for a single sample.
 
@@ -347,9 +241,6 @@ def run(
         boxes2d: Optional pre-computed 2D detections. Skips disk load.
         calib: Optional pre-loaded calibration dict. Skips load_calib.
         output_dir_override: Optional full output directory override.
-        image: Optional left BGR image. Used only by heading_method='learned'.
-               If None and learned heading is requested, the object-split
-               image is loaded from disk.
 
     Returns:
         Dict with keys: sample_id, boxes, n_input_boxes, n_skipped,
@@ -399,18 +290,7 @@ def run(
     if calib is None:
         calib = load_calib(data_root, split, sample_id)
 
-    # Learned heading needs the left image — load the object-split frame if a
-    # caller (e.g. tracking validation) hasn't already supplied one.
-    if image is None and stage_cfg.get("heading_method") == "learned":
-        from utils.kitti_loader import load_image
-        try:
-            image = load_image(data_root, split, "image_2", sample_id, suffix=".png")
-        except FileNotFoundError:
-            logger.warning("Learned heading requested but image for %s not "
-                           "found — lift_boxes will fall back to ray_angle",
-                           sample_id)
-
-    boxes3d, skip_reasons = lift_boxes(boxes2d, disp, calib, stage_cfg, image=image)
+    boxes3d, skip_reasons = lift_boxes(boxes2d, disp, calib, stage_cfg)
 
     n_input   = len(boxes2d)
     n_skipped = sum(skip_reasons.values())
@@ -469,7 +349,6 @@ if __name__ == "__main__":
         mlflow.log_param("method",         stage_cfg["method"])
         mlflow.log_param("depth_method",   method)
         mlflow.log_param("depth_sampling", stage_cfg["depth_sampling"])
-        mlflow.log_param("heading_method", stage_cfg["heading_method"])
         mlflow.log_param("min_valid_px",   stage_cfg["min_valid_pixels"])
 
         result = run(args.sample_id, base_cfg, stage_cfg, method=method)

@@ -6,10 +6,15 @@ match by BEV centre distance per class, and merge corroborated pairs (noisy-OR
 confidence, confidence-weighted pose, circular-mean heading).
 
 This module knows nothing about where the boxes or the transform came from — it
-operates on box dicts (x, y, z, l, w, h, heading, label, confidence) and a 4x4
-matrix. The data loaders (KITTI, CARLA, ...) and I/O live in
-``stages.stage4_fusion``. Boxes use the KITTI camera convention: x-right,
-y-down, z-forward; BEV is the x-z plane; heading is about the y-axis.
+operates on box dicts and a 4x4 matrix. Required box keys are ``label``,
+``confidence`` and the centre ``x, y, z``; the 3D extent ``l, w, h`` and
+``heading`` are optional. This lets the same core fuse both Stage-3 boxes
+(position-only: x, y, z) and full 3D boxes (e.g. CARLA GT with l, w, h,
+heading) — matching is always by BEV centre distance, and the extent/heading
+fields are merged and emitted only when the inputs carry them. The data loaders
+(KITTI, CARLA, ...) and I/O live in ``stages.stage4_fusion``. Boxes use the
+KITTI camera convention: x-right, y-down, z-forward; BEV is the x-z plane;
+heading is about the y-axis.
 """
 
 import math
@@ -17,6 +22,10 @@ import math
 import numpy as np
 
 from utils.geometry import wrap_to_pi
+
+# 3D extent + heading — present on full 3D boxes (e.g. CARLA GT), absent on
+# Stage-3 position-only boxes. Merged/emitted only when the inputs carry them.
+_OPTIONAL_DIMS = ("l", "w", "h")
 
 
 # ---------------------------------------------------------------------------
@@ -43,21 +52,24 @@ def _yaw_about_cam_y(R: np.ndarray) -> float:
 def transform_box(box: dict, T: np.ndarray) -> dict:
     """Transform a 3D box from one camera frame to another via a 4x4.
 
-    Centre is mapped by T; heading is offset by T's camera-Y yaw. Dimensions,
-    label and confidence are preserved.
+    Centre is mapped by T. If the box carries a ``heading`` it is offset by T's
+    camera-Y yaw; position-only boxes (no heading) are transformed without it.
+    All other keys (dimensions, label, confidence, 2D box) are carried through.
 
     Args:
-        box: 3D box dict with x, y, z, l, w, h, heading, label, confidence.
+        box: Box dict with x, y, z, label, confidence (required) and
+             optionally l, w, h, heading.
         T: 4x4 homogeneous transform mapping B's frame to A's.
 
     Returns:
         New box dict in the target frame (other keys carried through).
     """
     p = T @ np.array([box["x"], box["y"], box["z"], 1.0])
-    yaw = _yaw_about_cam_y(T[:3, :3])
     out = dict(box)
     out["x"], out["y"], out["z"] = float(p[0]), float(p[1]), float(p[2])
-    out["heading"] = wrap_to_pi(float(box["heading"]) + yaw)
+    if "heading" in box:
+        yaw = _yaw_about_cam_y(T[:3, :3])
+        out["heading"] = wrap_to_pi(float(box["heading"]) + yaw)
     return out
 
 
@@ -125,8 +137,10 @@ def noisy_or(c1: float, c2: float) -> float:
 def merge_static_pair(a: dict, b: dict) -> dict:
     """Merge a corroborated pair into one fused box.
 
-    Centre and dimensions are confidence-weighted averages; heading is the
-    confidence-weighted circular mean; confidence is noisy-OR.
+    Centre is a confidence-weighted average and confidence is noisy-OR. The 3D
+    extent (l, w, h) and heading are merged only when both inputs carry them —
+    dimensions by confidence-weighted average, heading by confidence-weighted
+    circular mean. Position-only pairs fuse to a position-only box.
 
     Args:
         a: Vehicle A box.
@@ -141,41 +155,50 @@ def merge_static_pair(a: dict, b: dict) -> dict:
     def wavg(key):
         return (wa * float(a[key]) + wb * float(b[key])) / wsum
 
-    # circular weighted mean for heading
-    sin_h = wa * math.sin(a["heading"]) + wb * math.sin(b["heading"])
-    cos_h = wa * math.cos(a["heading"]) + wb * math.cos(b["heading"])
-    heading = math.atan2(sin_h, cos_h)
-
-    return {
+    fused = {
         "label":      a["label"],
         "confidence": round(noisy_or(wa, wb), 4),
         "x":          round(wavg("x"), 3),
         "y":          round(wavg("y"), 3),
         "z":          round(wavg("z"), 3),
-        "l":          round(wavg("l"), 3),
-        "w":          round(wavg("w"), 3),
-        "h":          round(wavg("h"), 3),
-        "heading":    round(wrap_to_pi(heading), 4),
-        "source":     "fused",
-        "is_dynamic": False,
     }
+
+    for dim in _OPTIONAL_DIMS:
+        if dim in a and dim in b:
+            fused[dim] = round(wavg(dim), 3)
+
+    if "heading" in a and "heading" in b:
+        # circular weighted mean for heading
+        sin_h = wa * math.sin(a["heading"]) + wb * math.sin(b["heading"])
+        cos_h = wa * math.cos(a["heading"]) + wb * math.cos(b["heading"])
+        fused["heading"] = round(wrap_to_pi(math.atan2(sin_h, cos_h)), 4)
+
+    fused["source"]     = "fused"
+    fused["is_dynamic"] = False
+    return fused
 
 
 def _tagged(box: dict, source: str, is_dynamic: bool) -> dict:
-    """Return a clean output box carrying only the schema fields + tags."""
-    return {
+    """Return a clean output box carrying only the schema fields + tags.
+
+    The 3D extent (l, w, h) and heading are carried through only when the input
+    box has them, so position-only boxes stay position-only.
+    """
+    out = {
         "label":      box["label"],
         "confidence": round(float(box["confidence"]), 4),
         "x":          round(float(box["x"]), 3),
         "y":          round(float(box["y"]), 3),
         "z":          round(float(box["z"]), 3),
-        "l":          round(float(box["l"]), 3),
-        "w":          round(float(box["w"]), 3),
-        "h":          round(float(box["h"]), 3),
-        "heading":    round(float(box["heading"]), 4),
-        "source":     source,
-        "is_dynamic": is_dynamic,
     }
+    for dim in _OPTIONAL_DIMS:
+        if dim in box:
+            out[dim] = round(float(box[dim]), 3)
+    if "heading" in box:
+        out["heading"] = round(float(box["heading"]), 4)
+    out["source"]     = source
+    out["is_dynamic"] = is_dynamic
+    return out
 
 
 # ---------------------------------------------------------------------------
