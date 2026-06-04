@@ -1,9 +1,11 @@
 # Stage 1 — Stereo Depth Estimation Configuration
-# Method can be switched to 'raft' in a future iteration
+# Method: sgbm | waft
 method: sgbm
 
-# precomputed disparsities on Colab
-precomputed_dir: ./outputs/depth/object/waft
+# WAFT-Stereo model + config (used when method: waft). Must be run from the
+# project root so WAFT-Stereo imports resolve. ~85s/image on CPU, ~1-2s on GPU.
+waft_model_path:  ./models/WAFT-Stereo/ckpts/SynLarge/DAv2L-5.pth
+waft_config_path: ./models/WAFT-Stereo/configs/SynLarge/DAv2L-5.yaml
 
 # Depth clipping: pixels beyond this distance are set to np.nan.
 # Set to null to disable clipping (honest GT comparison).

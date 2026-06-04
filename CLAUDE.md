@@ -51,10 +51,13 @@
 - `outputs/boxes3d/{method}/{seq_id}/`   Stage 3 tracking only
 - `outputs/fusion/carla/{scenario}/`     Stage 4 CARLA fusion
 
+## WAFT Notes
+- Run `--method waft` from the project root so WAFT-Stereo imports
+  (`algorithms`, `bridgedepth`, `peft`) resolve correctly.
+- WAFT runs inference directly (no offline precompute): ~85s/image on
+  CPU, ~1-2s on GPU. Model is loaded once and cached across samples.
+
 ## Known Issues
-- WAFT disparity output suspected incorrect — 100% coverage and
-  depth range 2-8m regardless of scene. Likely wrong output tensor
-  read in precompute_waft_disparity.py.
 - Stage 3 only evaluated on tracking split — object split has misaligned
   stereo and detection frames (different scenes)
 - Stage 4 (`utils/carla_loader.py`, `validate_stage4_fusion.py`) is stubbed
