@@ -47,6 +47,7 @@ from stages.stage2_detect import load_model, run as run_stage2
 from stages.stage3_lift import load_configs, run as run_stage3
 from utils.geometry import center_distance
 from utils.kitti_tracking_loader import load_tracking_frame
+from utils.validation_io import merge_samples
 
 logger = logging.getLogger(__name__)
 
@@ -610,7 +611,19 @@ if __name__ == "__main__":
                     "error":    str(e),
                 })
 
-        valid = [r for r in all_results if "error" not in r]
+        results_path = (
+            Path("outputs/boxes3d")
+            / args.method
+            / args.seq_id
+            / "validation_results.json"
+        )
+
+        # Merge this run's frames into any results already on disk, then
+        # recompute aggregates over the full accumulated set.
+        merged_frames = merge_samples(
+            results_path, all_results, id_key="frame_id", list_key="frames",
+        )
+        valid = [r for r in merged_frames if "error" not in r]
 
         summary: dict = {
             "seq_id":         args.seq_id,
@@ -646,14 +659,8 @@ if __name__ == "__main__":
                 summary.get("n_skipped", 0),
             )
 
-        summary["frames"] = all_results
+        summary["frames"] = merged_frames
 
-        results_path = (
-            Path("outputs/boxes3d")
-            / args.method
-            / args.seq_id
-            / "validation_results.json"
-        )
         results_path.parent.mkdir(parents=True, exist_ok=True)
         with open(results_path, "w") as f:
             json.dump(summary, f, indent=2)

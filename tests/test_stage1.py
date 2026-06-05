@@ -251,3 +251,47 @@ class TestVisualization:
         disp[0, 0] = np.nan
         result = colorize_disparity(disp)
         assert np.all(result[0, 0] == 0), "NaN pixels must be rendered black"
+
+
+# ---------------------------------------------------------------------------
+# 3-panel validation figure tests (no data dependency)
+# ---------------------------------------------------------------------------
+
+class TestSideBySide:
+    def test_figure_is_three_panels_uint8(self):
+        from stages.validate_stage1_depth import make_side_by_side
+        h, w = 100, 120
+        img  = np.full((h, w, 3), 123, dtype=np.uint8)
+        pred = np.full((h, w), np.nan, dtype=np.float32)
+        gt   = np.full((h, w), np.nan, dtype=np.float32)
+        pred[20:80, 20:100] = 10.0
+        gt[20:80, 20:100]   = 12.0
+        out = make_side_by_side(img, pred, gt, SAMPLE_ID, 1.0, 5.0, "sgbm")
+        # Top row (input image, width 2*W, height H) stacked over the bottom
+        # disparity row (height H) → all three panels share height H.
+        assert out.dtype == np.uint8
+        assert out.shape == (2 * h, 2 * w, 3)
+
+    def test_bottom_row_holds_two_disparity_panels(self):
+        from stages.validate_stage1_depth import make_side_by_side
+        h, w = 100, 120
+        img  = np.full((h, w, 3), 123, dtype=np.uint8)
+        pred = np.full((h, w), np.nan, dtype=np.float32)
+        gt   = np.full((h, w), np.nan, dtype=np.float32)
+        out = make_side_by_side(img, pred, gt, SAMPLE_ID, 1.0, 5.0, "sgbm")
+        # Bottom row is the last H rows, two W-wide panels side by side.
+        bottom = out[h:]
+        assert bottom.shape == (h, 2 * w, 3)
+        # All-NaN disparity colorizes to black in both panels.
+        assert np.all(bottom[h // 2, :] == 0)
+
+    def test_top_row_is_resized_input(self):
+        from stages.validate_stage1_depth import make_side_by_side
+        h, w = 100, 120
+        img  = np.full((h, w, 3), 200, dtype=np.uint8)
+        pred = np.full((h, w), np.nan, dtype=np.float32)
+        gt   = np.full((h, w), np.nan, dtype=np.float32)
+        out  = make_side_by_side(img, pred, gt, SAMPLE_ID, 1.0, 5.0, "sgbm")
+        # Top row centre (away from the label) is the resized flat input.
+        top = out[:h]
+        assert np.all(top[h // 2, w] == 200)

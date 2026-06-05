@@ -6,11 +6,17 @@ Run with: pytest tests/
 
 import numpy as np
 import pytest
+import yaml
 
 from utils.kitti_loader import load_calib, load_disparity_gt, load_image, load_labels, load_sample
 
-DATA_ROOT = "./data/kitti/detection"
-SPLIT = "training"
+# Source the data location from config rather than hardcoding it, so the
+# tests follow config/base.yaml (single source of truth for data paths).
+with open("config/base.yaml") as _f:
+    _DATA_CFG = yaml.safe_load(_f)["data"]
+
+DATA_ROOT = _DATA_CFG["data_root"]
+SPLIT = _DATA_CFG["split"]
 SAMPLE_ID = "000000"
 
 

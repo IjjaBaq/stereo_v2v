@@ -23,7 +23,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage1_depth import load_configs, run as run_stage1
-from utils.kitti_loader import load_disparity_gt
+from utils.kitti_loader import load_disparity_gt, load_image
+from utils.validation_io import merge_samples
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ def evaluate(pred: np.ndarray, gt: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 
 def make_side_by_side(
+    left_img: np.ndarray,
     pred: np.ndarray,
     gt: np.ndarray,
     sample_id: str,
@@ -121,18 +123,28 @@ def make_side_by_side(
     d1: float,
     method: str,
 ) -> np.ndarray:
-    """Render predicted and GT disparity side-by-side with metrics overlay.
+    """Render a 3-panel validation figure for one sample.
+
+    Layout (top to bottom):
+        - Top row, full width: the original left camera image.
+        - Bottom left:  predicted disparity, colorized.
+        - Bottom right: GT disparity, colorized.
+
+    Predicted and GT disparity share a single colour scale so they are
+    directly comparable. The top image is resized to the disparity row's
+    width (2*W) and height (H) so all three panels are the same height.
 
     Args:
+        left_img: Left camera image, shape (H, W, 3), uint8 BGR.
         pred: Predicted disparity, shape (H, W), float32.
         gt:   GT disparity, shape (H, W), float32.
-        sample_id: For title overlay.
+        sample_id: For the title overlay.
         epe: EPE value.
         d1: D1 value.
         method: Method name for label.
 
     Returns:
-        Side-by-side BGR image, shape (H, 2*W, 3), uint8.
+        Stacked BGR figure, shape (2*H, 2*W, 3), uint8.
     """
     combined = np.concatenate([
         pred[~np.isnan(pred)].ravel(),
@@ -155,14 +167,24 @@ def make_side_by_side(
 
     font  = cv2.FONT_HERSHEY_SIMPLEX
     white = (255, 255, 255)
-    cv2.putText(pred_vis,
-                f"{method.upper()}  EPE={epe:.2f}px  D1={d1:.1f}%",
-                (10, 25), font, 0.6, white, 1, cv2.LINE_AA)
-    cv2.putText(gt_vis,
-                f"Ground Truth  [{sample_id}]",
-                (10, 25), font, 0.6, white, 1, cv2.LINE_AA)
 
-    return np.concatenate([pred_vis, gt_vis], axis=1)
+    def _label(img: np.ndarray, text: str, scale: float = 0.6) -> None:
+        # Black outline under white text so labels read on any background.
+        cv2.putText(img, text, (10, 25), font, scale, (0, 0, 0),   3, cv2.LINE_AA)
+        cv2.putText(img, text, (10, 25), font, scale, white,       1, cv2.LINE_AA)
+
+    _label(pred_vis, f"{method.upper()}  EPE={epe:.2f}px  D1={d1:.1f}%")
+    _label(gt_vis,   "Ground Truth")
+
+    bottom = np.concatenate([pred_vis, gt_vis], axis=1)
+
+    # Top row spans the full figure width (2*W) at the disparity row's height
+    # (H), so all three panels are the same height.
+    top_h, top_w = bottom.shape[:2]
+    top = cv2.resize(left_img, (top_w, top_h), interpolation=cv2.INTER_AREA)
+    _label(top, f"Input Image [{sample_id}]", scale=0.9)
+
+    return np.concatenate([top, bottom], axis=0)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +232,8 @@ def validate_sample(
     metrics = evaluate(pred, gt)
     metrics["sample_id"] = sample_id
 
-    vis      = make_side_by_side(pred, gt, sample_id,
+    left_img = load_image(data_root, split, "image_2", sample_id)
+    vis      = make_side_by_side(left_img, pred, gt, sample_id,
                                  epe=metrics["epe"], d1=metrics["d1"],
                                  method=method)
     vis_path = output_dir / f"{sample_id}_val.png"
@@ -270,7 +293,15 @@ if __name__ == "__main__":
                 logger.error("Failed on sample %s: %s", sid, e)
                 all_results.append({"sample_id": sid, "error": str(e)})
 
-        valid_results = [r for r in all_results if "error" not in r]
+        results_path = Path(f"./outputs/depth/object/{method}") / \
+                       "validation_results.json"
+
+        # Merge this run's samples into any results already on disk, then
+        # recompute aggregates over the full accumulated set.
+        merged_samples = merge_samples(
+            results_path, all_results, id_key="sample_id", list_key="samples",
+        )
+        valid_results = [r for r in merged_samples if "error" not in r]
 
         summary: dict = {
             "method":   method,
@@ -296,10 +327,8 @@ if __name__ == "__main__":
                 method, mean_epe, mean_d1, mean_coverage, len(valid_results),
             )
 
-        summary["samples"] = all_results
+        summary["samples"] = merged_samples
 
-        results_path = Path(f"./outputs/depth/object/{method}") / \
-                       "validation_results.json"
         with open(results_path, "w") as f:
             json.dump(summary, f, indent=2)
         logger.info("Validation results saved → %s", results_path)

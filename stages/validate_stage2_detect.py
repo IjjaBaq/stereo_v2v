@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage2_detect import load_configs, load_model, run as run_stage2
 from utils.kitti_loader import load_image, load_labels
+from utils.validation_io import merge_samples
 
 logger = logging.getLogger(__name__)
 
@@ -322,8 +323,7 @@ if __name__ == "__main__":
                 "Add more with --sample_ids.", len(sample_ids),
             )
 
-        all_preds: list[dict] = []
-        all_gts:   list[dict] = []
+        samples: list[dict] = []
 
         with mlflow.start_run(
             run_name=f"ap_eval_{len(sample_ids)}samples"
@@ -339,12 +339,36 @@ if __name__ == "__main__":
                     result = validate_sample(
                         sid, base_cfg, stage_cfg, processor, model
                     )
-                    for box in result["pred_boxes"]:
-                        all_preds.append({"sample_id": sid, **box})
-                    for box in result["gt_boxes"]:
-                        all_gts.append({"sample_id": sid, **box})
+                    samples.append({
+                        "sample_id": sid,
+                        "pred_boxes": result["pred_boxes"],
+                        "gt_boxes":   result["gt_boxes"],
+                    })
                 except Exception as e:
                     logger.error("Failed on sample %s: %s", sid, e)
+                    samples.append({"sample_id": sid, "error": str(e)})
+
+            output_dir   = Path(
+                stage_cfg.get("output_dir", "outputs/detections/object")
+            )
+            results_path = output_dir / "validation_results.json"
+
+            # Merge this run's samples into any results already on disk, then
+            # recompute AP over the full accumulated set. AP is a global metric
+            # over all boxes, so per-sample boxes are persisted to allow it.
+            merged_samples = merge_samples(
+                results_path, samples,
+                id_key="sample_id", list_key="samples",
+            )
+            valid_samples = [s for s in merged_samples if "error" not in s]
+
+            all_preds: list[dict] = []
+            all_gts:   list[dict] = []
+            for s in valid_samples:
+                for box in s["pred_boxes"]:
+                    all_preds.append({"sample_id": s["sample_id"], **box})
+                for box in s["gt_boxes"]:
+                    all_gts.append({"sample_id": s["sample_id"], **box})
 
             ap_results: dict[str, float] = {}
             for cls in KITTI_CLASSES:
@@ -357,16 +381,13 @@ if __name__ == "__main__":
             mlflow.log_metric("mAP", mean_ap)
             logger.info("mAP @ IoU=0.5 → %.4f", mean_ap)
 
-            output_dir   = Path(
-                stage_cfg.get("output_dir", "outputs/detections/object")
-            )
-            results_path = output_dir / "validation_results.json"
             with open(results_path, "w") as f:
                 json.dump({
                     "method":        stage_cfg["method"],
-                    "n_samples":     len(sample_ids),
+                    "n_samples":     len(valid_samples),
                     "iou_threshold": 0.5,
                     "AP":            ap_results,
                     "mAP":           mean_ap,
+                    "samples":       merged_samples,
                 }, f, indent=2)
             logger.info("Validation results saved → %s", results_path)
