@@ -33,14 +33,18 @@
 - GT y = bottom of object (not center) — subtract h/2 for center
 - Disparity GT: uint16 / 256.0 → float32, raw==0 → np.nan
 
-- Depth sampling inside 2D boxes: use percentile_75 not median
-  (background pixels have lower disparity than foreground objects)
+- Depth sampling inside 2D boxes (per-method, tuned in
+  experiments/percentile_choice.md): SGBM → percentile_20, WAFT → percentile_35.
+  SGBM is sparse (consistency check already drops background), so its valid
+  pixels sit on the car's near surface — a LOW percentile best matches box-centre
+  depth; a high percentile under-shoots. WAFT is dense (top-40% crop + 6m gate
+  first), so a mid-low percentile is best. (Supersedes the old percentile_75
+  rule, which over-corrected for background SGBM had already removed.)
 
 ## CLI Conventions
 - `--method` for depth method: `sgbm` | `waft` (Stages 1-3)
 - `--sample_id` / `--sample_ids` for object split
 - `--seq_id` + `--frame_ids` for tracking split
-- No `--tag`, no `--depth_method` — use `--method` everywhere
 - Stage 4 is CARLA-only: `--scenario` + `--timestamp` (+ optional `--agent_a/--agent_b`)
 
 ## Output Structure

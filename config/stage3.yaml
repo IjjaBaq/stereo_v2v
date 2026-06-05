@@ -12,10 +12,10 @@ min_valid_pixels: 10          # Skip box if fewer valid depth pixels than this
                               # Prevents garbage boxes from empty frustums
 
 # Depth sampling strategy.
-# validate_stage3_lift.py overrides this per method (percentile_75 for sgbm,
-# percentile_90 for waft). This default applies when running stage3_lift.py
-# standalone with sgbm output.
-depth_sampling: percentile_75
+# validate_stage3_lift.py overrides this per method (percentile_20 for sgbm,
+# percentile_35 for waft — tuned in experiments/percentile_choice.md). This
+# default applies when running stage3_lift.py standalone with sgbm output.
+depth_sampling: percentile_20
 
 # ROI refinement — removes ground/road contamination from dense depth maps.
 # validate_stage3_lift.py overrides these per method (1.0/null for sgbm,

@@ -56,19 +56,30 @@ np.random.seed(42)
 
 KITTI_CLASSES = ("Car", "Pedestrian")
 
-# Per-method depth sampling parameters — empirically validated on seq 0000.
+# Per-method depth-sampling parameters — tuned on a multi-sequence static-car
+# sweep (KITTI tracking 0000-0004; see experiments/percentile_choice.md).
 #
-# SGBM sparse valid pixels are naturally foreground-biased (smooth background
-# fails consistency checks → NaN), so percentile_75 reliably selects the object.
+# The two methods need OPPOSITE percentiles because their valid-pixel
+# distributions differ:
 #
-# WAFT is 100% dense: bounding boxes contain object + road + background.
-# Validated distribution: car pixels sit at ~p10-p20 of the full ROI (ground
-# pixels dominate at high disparity). Fix: top-40% vertical crop removes most
-# ground, min_depth_m=6.0 gates remaining near-ground artifacts, percentile_60
-# then selects the object reliably. MAE drops from 5.53m → 2.48m on seq 0000.
+# SGBM is sparse: the left-right consistency check nulls smooth background to
+# NaN, so the surviving valid pixels already sit on the car's near surface
+# (~1-6% are far background vs ~47-91% nearer than the box centre, measured in
+# real boxes). A HIGH percentile therefore picks the closest surface pixels and
+# under-shoots the box-centre depth; a LOW percentile (percentile_20) lands
+# nearest the centre while still dodging the small residual far-background tail a
+# yet-lower percentile would catch. The old percentile_75 was the WORST end of
+# the curve — it over-corrected for a background contamination that SGBM's
+# sparsity had already removed (aggregate MAE 4.27m @p75 vs 1.72m @p20).
+#
+# WAFT is dense: boxes contain object + road + background. A top-40% vertical
+# crop plus a 6m min-depth gate remove most ground; percentile_35 then best
+# matches centre depth with near-zero bias (the old percentile_60 sampled the
+# near surface, bias ~-2.95m → ~-0.64m @p35; aggregate MAE 2.97m → 3.44m but
+# the MAE rise is far-range WAFT-depth error, not sampling — see the doc).
 DEPTH_SAMPLING_BY_METHOD: dict[str, str] = {
-    "sgbm": "percentile_75",
-    "waft": "percentile_60",
+    "sgbm": "percentile_20",
+    "waft": "percentile_35",
 }
 
 CROP_TOP_FRAC_BY_METHOD: dict[str, float] = {

@@ -104,10 +104,14 @@ class TestConfig:
         assert stage_cfg["min_valid_pixels"] > 0
 
     def test_depth_sampling_method_is_supported(self, stage_cfg):
-        supported = {"median", "percentile_75"}
-        assert stage_cfg["depth_sampling"] in supported, (
-            f"depth_sampling='{stage_cfg['depth_sampling']}' "
-            f"not in supported set {supported}"
+        # Valid forms: 'median' or 'percentile_N' with 0 <= N <= 100.
+        ds = stage_cfg["depth_sampling"]
+        valid = ds == "median"
+        if ds.startswith("percentile_"):
+            tail = ds.split("_", 1)[1]
+            valid = tail.isdigit() and 0 <= int(tail) <= 100
+        assert valid, (
+            f"depth_sampling='{ds}' is not 'median' or a valid 'percentile_N'"
         )
 
 
