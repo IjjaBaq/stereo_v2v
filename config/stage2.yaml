@@ -17,7 +17,7 @@ model:
 #   COCO 'truck' loosely covers KITTI 'Car', 'Van', and 'Truck'.
 #   KITTI 'Van' has no clean COCO equivalent.
 #   Decision: map truck/bus → 'Car' (dominant KITTI class, simplest baseline).
-#   Revisit if Stage 3 produces 3D boxes with implausible l/w/h for large vehicles.
+#   Revisit if Stage 3 produces 3D positions that mis-localise large vehicles.
 
 
 class_mapping:

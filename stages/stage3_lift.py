@@ -1,7 +1,7 @@
-"""Stage 3 — Lift 2D Detections to 3D Bounding Boxes.
+"""Stage 3 — Lift 2D Detections to 3D Positions.
 
 Combines Stage 1 disparity + Stage 2 detections + calibration to produce
-3D bounding boxes via geometric unprojection.
+3D positions via geometric unprojection.
 
 Usage:
     python stages/stage3_lift.py --sample_id 000000 --method sgbm
@@ -136,7 +136,7 @@ def sample_depth(
 # Lifting pipeline
 # ---------------------------------------------------------------------------
 
-def lift_boxes(
+def lift_positions(
     boxes2d: list[dict],
     disp: np.ndarray,
     calib: dict,
@@ -144,7 +144,7 @@ def lift_boxes(
 ) -> tuple[list[dict], dict]:
     """Lift all 2D detections to 3D positions.
 
-    Each lifted box carries the geometrically reliable quantities only:
+    Each lifted position carries the geometrically reliable quantities only:
     the unprojected 3D center (x, y, z) and the source 2D box. Size and
     heading are deliberately not estimated — they are not recoverable from
     stereo geometry at range (see project notes).
@@ -156,7 +156,7 @@ def lift_boxes(
         stage_cfg: Loaded stage3.yaml config dict.
 
     Returns:
-        Tuple of (boxes3d, skip_reason_counts).
+        Tuple of (positions3d, skip_reason_counts).
     """
     P2                       = calib["P2"]
     focal_length, baseline   = extract_stereo_params(calib)
@@ -165,7 +165,7 @@ def lift_boxes(
     crop_top_frac            = float(stage_cfg.get("crop_top_frac", 1.0))
     min_depth_m              = stage_cfg.get("min_depth_m", None)
 
-    boxes3d:      list[dict]      = []
+    positions3d:  list[dict]      = []
     skip_reasons: dict[str, int]  = {}
 
     for box2d in boxes2d:
@@ -200,7 +200,7 @@ def lift_boxes(
         coverage_ratio = valid_count / box_area
         confidence_3d  = round(conf_2d * coverage_ratio, 4)
 
-        boxes3d.append({
+        positions3d.append({
             "label":      label,
             "confidence": confidence_3d,
             "x":          round(X,        3),
@@ -212,7 +212,7 @@ def lift_boxes(
             "y2": box2d["y2"],
         })
 
-    return boxes3d, skip_reasons
+    return positions3d, skip_reasons
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ def run(
         output_dir_override: Optional full output directory override.
 
     Returns:
-        Dict with keys: sample_id, boxes, n_input_boxes, n_skipped,
+        Dict with keys: sample_id, positions, n_input_boxes, n_skipped,
         skip_reason, output_path.
 
     Raises:
@@ -290,12 +290,12 @@ def run(
     if calib is None:
         calib = load_calib(data_root, split, sample_id)
 
-    boxes3d, skip_reasons = lift_boxes(boxes2d, disp, calib, stage_cfg)
+    positions3d, skip_reasons = lift_positions(boxes2d, disp, calib, stage_cfg)
 
     n_input   = len(boxes2d)
     n_skipped = sum(skip_reasons.values())
     logger.info("Lifting complete — %d input, %d lifted, %d skipped",
-                n_input, len(boxes3d), n_skipped)
+                n_input, len(positions3d), n_skipped)
 
     output = {
         "sample_id":     sample_id,
@@ -303,12 +303,12 @@ def run(
         "n_input_boxes": n_input,
         "n_skipped":     n_skipped,
         "skip_reason":   skip_reasons,
-        "boxes":         boxes3d,
+        "positions":     positions3d,
     }
-    output_path = output_dir / f"{sample_id}_boxes3d.json"
+    output_path = output_dir / f"{sample_id}_lift3d.json"
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
-    logger.info("Saved %d 3D boxes → %s", len(boxes3d), output_path)
+    logger.info("Saved %d 3D positions → %s", len(positions3d), output_path)
 
     return {**output, "output_path": output_path}
 
@@ -354,14 +354,14 @@ if __name__ == "__main__":
         result = run(args.sample_id, base_cfg, stage_cfg, method=method)
 
         mlflow.log_metric("n_input_boxes", result["n_input_boxes"])
-        mlflow.log_metric("n_lifted",      len(result["boxes"]))
+        mlflow.log_metric("n_lifted",      len(result["positions"]))
         mlflow.log_metric("n_skipped",     result["n_skipped"])
 
         for reason, count in result["skip_reason"].items():
             mlflow.log_metric(f"skip_{reason}", count)
 
-        if result["boxes"]:
-            depths = [b["z"] for b in result["boxes"]]
+        if result["positions"]:
+            depths = [b["z"] for b in result["positions"]]
             mlflow.log_metric("mean_z", round(float(np.mean(depths)), 3))
             mlflow.log_metric("min_z",  round(float(np.min(depths)),  3))
             mlflow.log_metric("max_z",  round(float(np.max(depths)),  3))

@@ -1,15 +1,15 @@
-# Stage 3 — Lift to 3D Bounding Boxes Configuration
-# Lifts 2D detections + disparity map → 3D bounding boxes
+# Stage 3 — Lift to 3D Positions Configuration
+# Lifts 2D detections + disparity map → 3D positions
 # Method can be extended in future iterations via method field
 
 method: lift_v1
-output_dir: ./outputs/boxes3d
+output_dir: ./outputs/lift3d
 
 # Disparity source — switch between sgbm and waft without touching stage3_lift.py
 disp_dir: ./outputs/depth/sgbm
 
-min_valid_pixels: 10          # Skip box if fewer valid depth pixels than this
-                              # Prevents garbage boxes from empty frustums
+min_valid_pixels: 10          # Skip detection if fewer valid depth pixels than this
+                              # Prevents garbage positions from empty frustums
 
 # Depth sampling strategy.
 # validate_stage3_lift.py overrides this per method (percentile_20 for sgbm,

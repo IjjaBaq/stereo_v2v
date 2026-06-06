@@ -1,4 +1,4 @@
-"""Smoke tests for Stage 3 — Lift to 3D Bounding Boxes.
+"""Smoke tests for Stage 3 — Lift to 3D Positions.
 
 Tests the full lifting pipeline on sample "000000" and validates
 geometry utilities with synthetic data.
@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from stages.stage3_lift import (
-    lift_boxes,
+    lift_positions,
     load_configs,
     run as run_stage3,
     sample_depth,
@@ -37,7 +37,7 @@ from utils.kitti_loader import load_calib
 BASE_CONFIG   = "config/base.yaml"
 STAGE_CONFIG  = "config/stage3.yaml"
 SAMPLE_ID     = "000000"
-OUTPUT_DIR    = Path("outputs/boxes3d")
+OUTPUT_DIR    = Path("outputs/lift3d")
 KITTI_CLASSES = {"Car", "Pedestrian", "Cyclist"}
 
 
@@ -76,8 +76,8 @@ def stage3_result(base_cfg, stage_cfg):
 
 
 @pytest.fixture(scope="module")
-def boxes3d(stage3_result):
-    return stage3_result["boxes"]
+def positions3d(stage3_result):
+    return stage3_result["positions"]
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +264,12 @@ class TestSampleDepth:
 
 class TestStage3Output:
     def test_run_returns_expected_keys(self, stage3_result):
-        for key in ("sample_id", "method", "boxes",
+        for key in ("sample_id", "method", "positions",
                     "n_input_boxes", "n_skipped", "output_path"):
             assert key in stage3_result
 
     def test_skipped_plus_lifted_equals_input(self, stage3_result):
-        assert (stage3_result["n_skipped"] + len(stage3_result["boxes"])
+        assert (stage3_result["n_skipped"] + len(stage3_result["positions"])
                 == stage3_result["n_input_boxes"])
 
     def test_json_file_exists(self, stage3_result):
@@ -284,7 +284,7 @@ class TestStage3Output:
         with open(stage3_result["output_path"]) as f:
             data = json.load(f)
         for key in ("sample_id", "method", "n_input_boxes",
-                    "n_skipped", "skip_reason", "boxes"):
+                    "n_skipped", "skip_reason", "positions"):
             assert key in data
 
     def test_json_sample_id_matches(self, stage3_result):
@@ -293,32 +293,32 @@ class TestStage3Output:
         assert data["sample_id"] == SAMPLE_ID
 
 
-class TestBoxes3d:
-    def test_each_box_has_required_fields(self, boxes3d):
+class TestPositions3d:
+    def test_each_position_has_required_fields(self, positions3d):
         required = {"label", "confidence", "x", "y", "z",
                     "x1", "y1", "x2", "y2"}
-        for i, box in enumerate(boxes3d):
-            missing = required - box.keys()
-            assert not missing, f"Box {i} missing fields: {missing}"
+        for i, pos in enumerate(positions3d):
+            missing = required - pos.keys()
+            assert not missing, f"Position {i} missing fields: {missing}"
 
-    def test_all_labels_valid_kitti_classes(self, boxes3d):
-        for box in boxes3d:
-            assert box["label"] in KITTI_CLASSES
+    def test_all_labels_valid_kitti_classes(self, positions3d):
+        for pos in positions3d:
+            assert pos["label"] in KITTI_CLASSES
 
-    def test_z_positive_for_all_boxes(self, boxes3d):
-        for box in boxes3d:
-            assert box["z"] > 0, \
-                f"Box z={box['z']} must be positive (in front of camera)"
+    def test_z_positive_for_all_positions(self, positions3d):
+        for pos in positions3d:
+            assert pos["z"] > 0, \
+                f"Position z={pos['z']} must be positive (in front of camera)"
 
-    def test_confidence_in_range(self, boxes3d):
-        for box in boxes3d:
-            assert 0.0 <= box["confidence"] <= 1.0, \
-                f"confidence={box['confidence']} out of range"
+    def test_confidence_in_range(self, positions3d):
+        for pos in positions3d:
+            assert 0.0 <= pos["confidence"] <= 1.0, \
+                f"confidence={pos['confidence']} out of range"
 
-    def test_2d_coords_present_and_valid(self, boxes3d):
-        for box in boxes3d:
-            assert box["x2"] > box["x1"], "x2 must be > x1"
-            assert box["y2"] > box["y1"], "y2 must be > y1"
+    def test_2d_coords_present_and_valid(self, positions3d):
+        for pos in positions3d:
+            assert pos["x2"] > pos["x1"], "x2 must be > x1"
+            assert pos["y2"] > pos["y1"], "y2 must be > y1"
 
 
 # ---------------------------------------------------------------------------

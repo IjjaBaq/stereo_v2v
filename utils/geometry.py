@@ -87,13 +87,13 @@ def wrap_to_pi(angle: float) -> float:
 # ---------------------------------------------------------------------------
 
 def center_distance(pred: dict, gt: dict) -> float:
-    """Compute Euclidean distance between two 3D box centers.
+    """Compute Euclidean distance between two 3D positions.
 
     Both arguments must be dicts with keys x, y, z (metres).
 
     Args:
-        pred: Predicted 3D box dict.
-        gt:   Ground-truth 3D box dict.
+        pred: Predicted 3D position dict.
+        gt:   Ground-truth 3D position dict.
 
     Returns:
         Euclidean distance in metres.

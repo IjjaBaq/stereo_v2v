@@ -1,7 +1,9 @@
 """Stage 4 — V2V Cooperative Fusion.
 
-Fuses Stage 3 3D bounding boxes from two simultaneous vehicles (CARLA agents A
-and B) into Vehicle A's camera coordinate frame.
+Fuses the per-agent 3D detections from two simultaneous vehicles (CARLA agents A
+and B) into Vehicle A's camera coordinate frame. Each detection may be a Stage 3
+3D position (x, y, z) or a full CARLA GT box (x, y, z, l, w, h, heading) — the
+fusion core handles both.
 
 Pipeline:
     1. Load each agent's boxes and the inter-agent transform T_b_to_a

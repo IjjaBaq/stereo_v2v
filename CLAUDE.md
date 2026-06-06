@@ -52,7 +52,7 @@
 - `outputs/depth/tracking/{method}/{seq_id}/`  Stage 1 tracking
 - `outputs/detections/object/`           Stage 2 object split
 - `outputs/detections/tracking/{seq_id}/` Stage 2 tracking
-- `outputs/boxes3d/{method}/{seq_id}/`   Stage 3 tracking only
+- `outputs/lift3d/{method}/{seq_id}/`   Stage 3 tracking only
 - `outputs/fusion/carla/{scenario}/`     Stage 4 CARLA fusion
 
 ## WAFT Notes

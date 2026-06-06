@@ -67,7 +67,7 @@ small evaluation set — indicative, not a benchmark accuracy.
 ### Stage 3 — 3D lifting (position-only)
 The end-to-end **matching** metrics (TP/FP/FN, centre distance) have **not been
 re-run cleanly at the newly tuned depth-sampling percentiles** (the
-`outputs/boxes3d/**/validation_results.json` files accumulate frames from several
+`outputs/lift3d/**/validation_results.json` files accumulate frames from several
 prior runs at the *old* percentiles and are superseded — do not cite them).
 
 What **is** current and clean is the **depth-sampling accuracy study**
@@ -161,7 +161,7 @@ The CARLA backend (`run_carla`) is the data plumbing around it.
    WAFT bug, and no sampling percentile fixes it. SGBM additionally loses coverage
    at range (some far-car boxes have no valid pixels).
 2. **Stage 3 end-to-end metrics need a clean re-run.** The
-   `outputs/boxes3d/**/validation_results.json` files accumulate frames from
+   `outputs/lift3d/**/validation_results.json` files accumulate frames from
    multiple runs at the *old* percentiles (p75/p60) and must be regenerated at the
    new config (p20/p35) before any Stage-3 TP/FP/centre-distance numbers are cited.
 3. **Object split is not used for Stage 3.** Object-split stereo and detection

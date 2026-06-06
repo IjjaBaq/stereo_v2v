@@ -12,12 +12,12 @@ Computes:
 Produces per frame:
     - outputs/depth/tracking/{method}/{seq_id}/{frame_id:06d}_disp.npy
     - outputs/detections/tracking/{seq_id}/{frame_id:06d}_boxes2d.json
-    - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_boxes3d.json
-    - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_bev.png
-    - outputs/boxes3d/{method}/{seq_id}/{frame_id:06d}_2d.png
+    - outputs/lift3d/{method}/{seq_id}/{frame_id:06d}_lift3d.json
+    - outputs/lift3d/{method}/{seq_id}/{frame_id:06d}_bev.png
+    - outputs/lift3d/{method}/{seq_id}/{frame_id:06d}_2d.png
 
 Produces per run:
-    - outputs/boxes3d/{method}/{seq_id}/validation_results.json
+    - outputs/lift3d/{method}/{seq_id}/validation_results.json
 
 Usage:
     python stages/validate_stage3_lift.py \\
@@ -130,8 +130,8 @@ def load_all_configs(
 # GT conversion
 # ---------------------------------------------------------------------------
 
-def gt_label_to_box3d(obj: dict) -> dict:
-    """Convert a KITTI tracking label to a 3D box dict.
+def gt_label_to_position3d(obj: dict) -> dict:
+    """Convert a KITTI tracking label to a 3D position dict.
 
     KITTI stores y = bottom of object in camera coordinates (Y points down).
     Convert to center Y before computing metrics. Stage 3 emits position +
@@ -142,7 +142,7 @@ def gt_label_to_box3d(obj: dict) -> dict:
              x, y, z, h, x1, y1, x2, y2, label.
 
     Returns:
-        3D box dict with keys x, y, z, x1, y1, x2, y2, label.
+        3D position dict with keys x, y, z, x1, y1, x2, y2, label.
     """
     return {
         "label":   obj["label"],
@@ -172,8 +172,8 @@ def match_boxes(
     take pairs whose pred and gt are both still unmatched.
 
     Args:
-        preds: Predicted 3D box dicts with x, y, z, label.
-        gts:   GT 3D box dicts with x, y, z, label.
+        preds: Predicted 3D position dicts with x, y, z, label.
+        gts:   GT 3D position dicts with x, y, z, label.
         max_dist: Per-class max 3D center distance for a valid match.
                   Missing classes default to 0.0 (never match).
 
@@ -222,8 +222,8 @@ def compute_metrics(
     """Compute 3D detection metrics over matched TP pairs.
 
     Args:
-        preds: Predicted 3D box dicts.
-        gts:   GT 3D box dicts (Y already converted to center).
+        preds: Predicted 3D position dicts.
+        gts:   GT 3D position dicts (Y already converted to center).
         matches: List of (pred_idx, gt_idx) TP pairs.
 
     Returns:
@@ -272,8 +272,8 @@ def make_bev_visualization(
     with yellow dashed lines.
 
     Args:
-        pred_boxes: Predicted 3D box dicts with keys x, z, label.
-        gt_boxes:   GT 3D box dicts with keys x, z, label.
+        pred_boxes: Predicted 3D position dicts with keys x, z, label.
+        gt_boxes:   GT 3D position dicts with keys x, z, label.
         matches:    TP (pred_idx, gt_idx) pairs.
         frame_id:   Frame index for title.
         seq_id:     Sequence ID for title.
@@ -384,7 +384,7 @@ def make_2d_overlay_visualization(
 
     for pred in pred_boxes:
         draw_box(pred, (0, 220, 80),
-                 f"{pred['label']} {pred['confidence']:.2f}")
+                 f"{pred['label']} {pred['z']:.1f}m {pred['confidence']:.2f}")
 
     cv2.putText(out, f"seq {seq_id} frame {frame_id:06d}",
                 (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
@@ -434,7 +434,7 @@ def validate_frame(
 
     depth_out = f"outputs/depth/tracking/{method}/{seq_id}"
     det_out   = f"outputs/detections/tracking/{seq_id}"
-    box3d_out = f"outputs/boxes3d/{method}/{seq_id}"
+    lift3d_out = f"outputs/lift3d/{method}/{seq_id}"
 
     # Load all aligned data for this frame in one call
     frame = load_tracking_frame(tracking_root, "training", seq_id, frame_id)
@@ -491,17 +491,17 @@ def validate_frame(
         disp=s1["disp"],
         boxes2d=s2["boxes"],
         calib=calib,
-        output_dir_override=box3d_out,
+        output_dir_override=lift3d_out,
     )
 
     # GT — filter to active classes, convert Y to center
     gt_boxes = [
-        gt_label_to_box3d(obj)
+        gt_label_to_position3d(obj)
         for obj in frame["labels"]
         if obj["label"] in KITTI_CLASSES
     ]
 
-    pred_boxes = s3["boxes"]
+    pred_boxes = s3["positions"]
     max_dist   = stage3_cfg.get("matching", {}).get("max_dist", {})
     matches, fp_idx, fn_idx = match_boxes(pred_boxes, gt_boxes, max_dist)
     metrics = compute_metrics(pred_boxes, gt_boxes, matches)
@@ -518,7 +518,7 @@ def validate_frame(
         metrics["mean_center_dist"] if not math.isnan(metrics["mean_center_dist"]) else -1,
     )
 
-    out_dir = Path(box3d_out)
+    out_dir = Path(lift3d_out)
     make_bev_visualization(
         pred_boxes, gt_boxes, matches,
         frame_id=frame_id, seq_id=seq_id,
@@ -623,7 +623,7 @@ if __name__ == "__main__":
                 })
 
         results_path = (
-            Path("outputs/boxes3d")
+            Path("outputs/lift3d")
             / args.method
             / args.seq_id
             / "validation_results.json"
