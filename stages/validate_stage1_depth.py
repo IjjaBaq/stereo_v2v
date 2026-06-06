@@ -13,6 +13,7 @@ import json
 import logging
 import random
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -22,7 +23,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from stages.stage1_depth import load_configs, run as run_stage1
+from stages.stage1_depth import load_configs, load_waft_model, run as run_stage1
 from utils.kitti_loader import load_disparity_gt, load_image
 from utils.validation_io import merge_samples
 
@@ -208,15 +209,23 @@ def validate_sample(
         method: 'sgbm' | 'waft'.
 
     Returns:
-        Dict with keys: sample_id, epe, d1, coverage, valid_gt_px, evaluated_px.
+        Dict with keys: sample_id, epe, d1, coverage, valid_gt_px, evaluated_px,
+        runtime_s. runtime_s is the wall-clock from image load to .npy save
+        (model load excluded — caller pre-warms it), or None if the disparity
+        was already cached on disk and not recomputed this run.
     """
     output_dir = Path(f"./outputs/depth/object/{method}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     disp_path = output_dir / f"{sample_id}_disp.npy"
+    runtime_s = None
     if not disp_path.exists():
         logger.info("Disparity not found for %s — running Stage 1.", sample_id)
+        # Wall-clock for one image: load → compute → .npy save. The model is
+        # pre-warmed (cached) by the caller, so this excludes model-load time.
+        t0 = time.perf_counter()
         run_stage1(sample_id, base_cfg, stage_cfg, method=method)
+        runtime_s = time.perf_counter() - t0
 
     pred = np.load(str(disp_path))
 
@@ -231,6 +240,9 @@ def validate_sample(
 
     metrics = evaluate(pred, gt)
     metrics["sample_id"] = sample_id
+    metrics["runtime_s"] = (
+        round(runtime_s, 4) if runtime_s is not None else None
+    )
 
     left_img = load_image(data_root, split, "image_2", sample_id)
     vis      = make_side_by_side(left_img, pred, gt, sample_id,
@@ -273,6 +285,12 @@ if __name__ == "__main__":
     method     = (args.method or stage_cfg["method"]).lower()
     sample_ids = [args.sample_id] if args.sample_id else args.sample_ids
 
+    # Pre-warm the depth model once so per-image runtime excludes model-load
+    # time (the model is cached across samples). SGBM has no model to load.
+    if method == "waft":
+        logger.info("Pre-warming WAFT model (excluded from per-image runtime)...")
+        load_waft_model(stage_cfg["waft_config_path"], stage_cfg["waft_model_path"])
+
     mlflow.set_tracking_uri(base_cfg["mlflow"]["tracking_uri"])
     mlflow.set_experiment("stage1_depth_validation")
 
@@ -285,10 +303,12 @@ if __name__ == "__main__":
         mlflow.log_param("n_samples",  len(sample_ids))
         mlflow.log_param("sample_ids", " ".join(sample_ids))
 
-        for sid in sample_ids:
+        for i, sid in enumerate(sample_ids):
             try:
                 result = validate_sample(sid, base_cfg, stage_cfg, method)
                 all_results.append(result)
+                if result.get("runtime_s") is not None:
+                    mlflow.log_metric("runtime_s", result["runtime_s"], step=i)
             except Exception as e:
                 logger.error("Failed on sample %s: %s", sid, e)
                 all_results.append({"sample_id": sid, "error": str(e)})
@@ -320,6 +340,15 @@ if __name__ == "__main__":
             mlflow.log_metric("mean_epe",      mean_epe)
             mlflow.log_metric("mean_d1",       mean_d1)
             mlflow.log_metric("mean_coverage", mean_coverage)
+
+            # Mean per-image runtime over samples that were actually computed
+            # this run (cached samples carry runtime_s=None and are excluded).
+            runtimes = [r["runtime_s"] for r in valid_results
+                        if r.get("runtime_s") is not None]
+            if runtimes:
+                mean_runtime_s = float(np.mean(runtimes))
+                summary["mean_runtime_s"] = mean_runtime_s
+                mlflow.log_metric("mean_runtime_s", mean_runtime_s)
 
             logger.info(
                 "=== Validation Summary [%s] === "

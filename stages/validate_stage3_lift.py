@@ -252,6 +252,47 @@ def compute_metrics(
     }
 
 
+# Depth-range bins for the localization breakdown, keyed by GT depth (gt_z).
+# Each bin is [lo, hi) metres; the last is open-ended.
+DEPTH_BINS = (
+    ("0_10m",    0.0,  10.0),
+    ("10_20m",  10.0,  20.0),
+    ("20_40m",  20.0,  40.0),
+    ("40m_plus", 40.0, float("inf")),
+)
+
+
+def build_pair_records(
+    preds: list[dict],
+    gts: list[dict],
+    matches: list[tuple[int, int]],
+) -> list[dict]:
+    """Per-matched-pair records for per-class and depth-range aggregation.
+
+    Carries just enough per-TP detail that the run summary can pool errors
+    across all frames (by class and by GT-depth bin) instead of averaging
+    pre-averaged frame means.
+
+    Args:
+        preds: Predicted 3D position dicts.
+        gts:   GT 3D position dicts (Y already converted to center).
+        matches: List of (pred_idx, gt_idx) TP pairs.
+
+    Returns:
+        List of dicts with keys: label, gt_z, depth_err, center_dist.
+    """
+    records = []
+    for pi, gi in matches:
+        pred, gt = preds[pi], gts[gi]
+        records.append({
+            "label":       gt["label"],
+            "gt_z":        float(gt["z"]),
+            "depth_err":   abs(float(pred["z"]) - float(gt["z"])),
+            "center_dist": center_distance(pred, gt),
+        })
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Visualizations
 # ---------------------------------------------------------------------------
@@ -510,6 +551,12 @@ def validate_frame(
     n_fp = len(fp_idx)
     n_fn = len(fn_idx)
 
+    # Per-pair / per-label detail for the run-level per-class and depth-range
+    # breakdowns (aggregated across all frames in __main__).
+    tp_pairs  = build_pair_records(pred_boxes, gt_boxes, matches)
+    fp_labels = [pred_boxes[i]["label"] for i in fp_idx]
+    fn_labels = [gt_boxes[i]["label"]   for i in fn_idx]
+
     logger.info(
         "seq=%s frame=%06d — TP=%d FP=%d FN=%d | "
         "depth_err=%.2fm center_dist=%.2fm",
@@ -537,6 +584,9 @@ def validate_frame(
         "n_fp":      n_fp,
         "n_fn":      n_fn,
         "n_skipped": s3["n_skipped"],
+        "tp_pairs":  tp_pairs,
+        "fp_labels": fp_labels,
+        "fn_labels": fn_labels,
         **metrics,
     }
 
@@ -656,6 +706,52 @@ if __name__ == "__main__":
                 total = sum(r.get(count_key, 0) for r in valid)
                 summary[count_key] = total
                 mlflow.log_metric(count_key, total)
+
+            # Per-class breakdown — counts summed, errors pooled over all TP
+            # pairs of that class (not an average of per-frame means).
+            per_class: dict = {}
+            for cls in KITTI_CLASSES:
+                de = [p["depth_err"]   for r in valid
+                      for p in r.get("tp_pairs", []) if p["label"] == cls]
+                cd = [p["center_dist"] for r in valid
+                      for p in r.get("tp_pairs", []) if p["label"] == cls]
+                n_tp_c = len(de)
+                n_fp_c = sum(lab == cls for r in valid
+                             for lab in r.get("fp_labels", []))
+                n_fn_c = sum(lab == cls for r in valid
+                             for lab in r.get("fn_labels", []))
+                per_class[cls] = {
+                    "n_tp":        n_tp_c,
+                    "n_fp":        n_fp_c,
+                    "n_fn":        n_fn_c,
+                    "depth_err":   float(np.mean(de)) if de else None,
+                    "center_dist": float(np.mean(cd)) if cd else None,
+                }
+                mlflow.log_metric(f"n_tp_{cls}", n_tp_c)
+                mlflow.log_metric(f"n_fp_{cls}", n_fp_c)
+                mlflow.log_metric(f"n_fn_{cls}", n_fn_c)
+                if de:
+                    mlflow.log_metric(f"depth_err_{cls}",   per_class[cls]["depth_err"])
+                    mlflow.log_metric(f"center_dist_{cls}", per_class[cls]["center_dist"])
+            summary["per_class"] = per_class
+
+            # Depth-range breakdown — TP pairs binned by GT depth (gt_z).
+            depth_range_breakdown: dict = {}
+            for name, lo, hi in DEPTH_BINS:
+                de = [p["depth_err"]   for r in valid
+                      for p in r.get("tp_pairs", []) if lo <= p["gt_z"] < hi]
+                cd = [p["center_dist"] for r in valid
+                      for p in r.get("tp_pairs", []) if lo <= p["gt_z"] < hi]
+                entry = {
+                    "n":           len(de),
+                    "depth_err":   float(np.mean(de)) if de else None,
+                    "center_dist": float(np.mean(cd)) if cd else None,
+                }
+                depth_range_breakdown[name] = entry
+                if de:  # do not log empty bins to MLflow
+                    mlflow.log_metric(f"depth_err_{name}",   entry["depth_err"])
+                    mlflow.log_metric(f"center_dist_{name}", entry["center_dist"])
+            summary["depth_range_breakdown"] = depth_range_breakdown
 
             logger.info(
                 "=== Validation Summary [seq=%s method=%s] === "

@@ -25,6 +25,20 @@ Report per method:
 Reuse ``stages.stage4_fusion.run_carla`` to produce fused boxes and
 ``utils.fusion.bev_distance`` for matching. GT comes from
 ``utils.carla_loader`` (per-agent GT vehicles for the scene).
+
+Thesis metrics to capture once CARLA is wired (schema for the eventual
+``validation_results.json`` + MLflow, so the next implementer has a target):
+    - n_tp / n_fp / n_fn for each agent SOLO (A-alone, B-alone) and for the
+      FUSED output — each matched to CARLA GT in A's frame.
+    - recall_improvement = recall_fused - recall_A_alone (the headline V2V gain).
+    - b_unique_tp = GT objects detected only by Vehicle B (outside A's view /
+      occluded for A) that fusion adds to A's scene.
+    - localization_error_A vs localization_error_fused = mean BEV centre error
+      on true positives, single-agent vs fused.
+    - depth_range_breakdown = the same GT-depth bins as Stage 3
+      (0-10m, 10-20m, 20-40m, 40m+): per bin n_pairs, mean depth/centre error.
+    - per-class breakdown (Car, Pedestrian) for all of the above counts/errors.
+    - mean inference time per frame (seconds), model load excluded.
 """
 
 import sys
