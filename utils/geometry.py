@@ -83,6 +83,35 @@ def wrap_to_pi(angle: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# 2D box IoU
+# ---------------------------------------------------------------------------
+
+def box_iou(box_a: dict, box_b: dict) -> float:
+    """Compute IoU between two boxes in x1y1x2y2 format.
+
+    Args:
+        box_a: Dict with keys x1, y1, x2, y2.
+        box_b: Dict with keys x1, y1, x2, y2.
+
+    Returns:
+        IoU value in [0, 1].
+    """
+    ix1 = max(box_a["x1"], box_b["x1"])
+    iy1 = max(box_a["y1"], box_b["y1"])
+    ix2 = min(box_a["x2"], box_b["x2"])
+    iy2 = min(box_a["y2"], box_b["y2"])
+
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+
+    area_a = (box_a["x2"] - box_a["x1"]) * (box_a["y2"] - box_a["y1"])
+    area_b = (box_b["x2"] - box_b["x1"]) * (box_b["y2"] - box_b["y1"])
+    union  = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
 # Center distance
 # ---------------------------------------------------------------------------
 

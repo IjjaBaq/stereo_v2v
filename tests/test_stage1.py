@@ -16,7 +16,6 @@ import pytest
 import yaml
 
 from stages.stage1_depth import (
-    colorize_disparity,
     compute_disparity_sgbm,
     disparity_to_depth,
     extract_stereo_params,
@@ -24,6 +23,7 @@ from stages.stage1_depth import (
     run as run_stage1,
 )
 from utils.kitti_loader import load_calib, load_image
+from utils.visualization import colorize_disparity, make_side_by_side
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -259,7 +259,6 @@ class TestVisualization:
 
 class TestSideBySide:
     def test_figure_is_three_panels_uint8(self):
-        from stages.validate_stage1_depth import make_side_by_side
         h, w = 100, 120
         img  = np.full((h, w, 3), 123, dtype=np.uint8)
         pred = np.full((h, w), np.nan, dtype=np.float32)
@@ -273,7 +272,6 @@ class TestSideBySide:
         assert out.shape == (2 * h, 2 * w, 3)
 
     def test_bottom_row_holds_two_disparity_panels(self):
-        from stages.validate_stage1_depth import make_side_by_side
         h, w = 100, 120
         img  = np.full((h, w, 3), 123, dtype=np.uint8)
         pred = np.full((h, w), np.nan, dtype=np.float32)
@@ -286,7 +284,6 @@ class TestSideBySide:
         assert np.all(bottom[h // 2, :] == 0)
 
     def test_top_row_is_resized_input(self):
-        from stages.validate_stage1_depth import make_side_by_side
         h, w = 100, 120
         img  = np.full((h, w, 3), 200, dtype=np.uint8)
         pred = np.full((h, w), np.nan, dtype=np.float32)

@@ -1,5 +1,5 @@
 # Stereo V2V — Project Status Report
-*As of 2026-06-05 · branch `main`*
+*As of 2026-06-10 · branch `main`*
 
 ## 1. What the project is
 
@@ -21,8 +21,10 @@ logging, and a standalone validation step.
 **Two data sources, by design:**
 - **KITTI** — real-image stereo, used for Stages 1–3 (object split for Stages 1–2
   single-frame validation; tracking sequences 0000–0004 for the Stage 3 chain).
-- **CARLA** — intended source for Stage 4 (true simultaneous multi-agent V2V).
-  **Not wired yet:** there is no `data/carla/` and the CARLA loader is a stub.
+- **CARLA** — source for Stage 4 (true simultaneous multi-agent V2V). **Wired
+  in:** `data/carla` (Town10HD intersection, 300 frames, two moving ego
+  vehicles); the loader, detector path, and Stage 4 validation all run
+  end-to-end.
 
 > **Scope note.** Stage 3 emits **position only** — `label, confidence, x, y, z,
 > x1, y1, x2, y2`. Object **size** and **heading** are not produced: neither is
@@ -90,12 +92,34 @@ range. Beyond ~30 m, depth error is governed by the depth **map** at range
   re-tuned (2026-06-05); end-to-end matching re-validation at the new config is
   pending.
 
-### Stage 4 — V2V fusion: **not yet validated** (CARLA not wired)
-The fusion **core** (`utils/fusion.py`) is implemented and unit-tested (26 tests),
-but it cannot run end-to-end: `utils/carla_loader.py` and
-`stages/validate_stage4_fusion.py` are stubs that raise `NotImplementedError`.
-Any files under `outputs/fusion/**` are leftovers from the retired KITTI
-temporal-simulation backend and are not produced by the current code.
+### Stage 4 — V2V fusion (CARLA, **20 frames**, cooperative GT)
+`outputs/fusion/carla/{sgbm,waft}/validation_results.json`
+
+Each frame scores three prediction sets — **A-alone**, **B-alone** (registered
+into A's frame), **Fused** — against a *cooperative* GT (every vehicle visible to
+A *or* B, deduped by `actor_id`; all 85 coop-GT objects across the 20 frames are
+Cars). Matching is greedy BEV centre distance per class.
+
+| Metric | A-alone | B-alone | **Fused** |
+|---|---|---|---|
+| Recall — SGBM | 0.21 | 0.38 | **0.54** (+0.33) |
+| Recall — WAFT | 0.08 | 0.29 | **0.38** (+0.29) |
+| Precision — SGBM | 0.15 | 0.35 | 0.23 |
+| Precision — WAFT | 0.05 | 0.24 | 0.14 |
+| Loc-err (m) — SGBM | 1.33 | 1.29 | 1.31 |
+| Loc-err (m) — WAFT | 1.75 | 1.38 | 1.46 |
+
+**B-unique TPs** (objects recovered only via Vehicle B): **23** (SGBM) / **15**
+(WAFT). This is the headline V2V result — **fusion ~2.5× A-alone recall (SGBM
+0.21→0.54) with no localization penalty**, recovering objects A could not see.
+
+- **SGBM beats WAFT here** (same Stage-3 pattern: WAFT skips nothing → more FPs;
+  SGBM's sparsity filters weak detections) and is ~24× faster (6.8 vs 160 s/frame
+  on CPU). SGBM is the method to cite for Stage 4.
+- **Caveats (small, indicative — not a benchmark):** 20 frames; the CARLA scene
+  has only vehicles in coop-GT, so every Pedestrian detection is a false positive
+  (RT-DETR hallucinations) and drags overall precision down — Car-only is the real
+  signal. All GT sits within 0–20 m (close-range intersection).
 
 ---
 
@@ -144,10 +168,11 @@ The **source-agnostic core** registers Vehicle B's boxes into Vehicle A's frame
 via a 4×4 transform, greedily matches by BEV centre distance per class, and merges
 corroborated pairs (noisy-OR confidence, confidence-weighted centre; size/heading
 merged only if present — the core handles both position-only and full-3D boxes).
-The CARLA backend (`run_carla`) is the data plumbing around it.
-- **Status:** ⚙️ Core implemented + unit-tested (26 tests). 🔲 **Cannot run
-  end-to-end** — CARLA loader and Stage 4 validation are stubs pending a real
-  CARLA export.
+The CARLA backend (`run_carla`) is the data plumbing around it: it runs Stages
+1-3 per agent (`detect_agent_boxes`), registers B into A's frame, and fuses.
+- **Status:** ✅ Core implemented + unit-tested (26 tests) and now **validated
+  end-to-end on CARLA** (20 frames). Fusion lifts recall 0.21→0.54 (SGBM) over
+  Vehicle-A-alone, recovering 23 B-unique objects — see §2.
 
 ---
 
@@ -166,10 +191,11 @@ The CARLA backend (`run_carla`) is the data plumbing around it.
    new config (p20/p35) before any Stage-3 TP/FP/centre-distance numbers are cited.
 3. **Object split is not used for Stage 3.** Object-split stereo and detection
    frames are different scenes; Stage 3 is chained only on the tracking split.
-4. **CARLA not wired.** `utils/carla_loader.py` and
-   `stages/validate_stage4_fusion.py` raise `NotImplementedError`. Stage 4 has no
-   end-to-end run or validation until a CARLA export exists. The verified CARLA
-   coordinate conventions are documented in the loader's docstring.
+4. **Stage 4 precision is low / small sample.** The CARLA scene's coop-GT is
+   vehicles only, so every Pedestrian detection is a false positive (and fusion
+   keeps both agents' FPs), holding fused precision to ~0.23 (SGBM) despite the
+   strong recall gain. The run is 20 frames at close range (all GT 0–20 m) — an
+   indicative V2V demonstration, not a benchmark.
 5. **Heading/orientation is intentionally out of scope.** Stereo cannot recover
    per-object heading at range (ray-angle assumes the object faces the camera ray;
    pseudo-LiDAR PCA locks onto depth noise; a learned head only reached a ~69°
@@ -201,15 +227,16 @@ Stage 4 includes coverage for **both** box schemas through the fusion core
 | 1 Depth | ✅ working | WAFT accurate (EPE 0.89 px, 5 frames) and trusted; SGBM is the sparse baseline. |
 | 2 Detect | ✅ working | RT-DETR runs and maps to KITTI; mAP 0.930 over 10 frames. |
 | 3 Lift | ⚙️ code current, depth-sampling re-tuned | Emits 3D position + 2D box; percentiles tuned (SGBM p20, WAFT p35); end-to-end re-run pending. |
-| 4 Fusion | ⚙️ core done, 🔲 e2e blocked | Source-agnostic fusion unit-tested; cannot run until CARLA is wired. |
+| 4 Fusion | ✅ validated on CARLA | Fusion recall 0.21→0.54 (SGBM, 20 frames), +23 B-unique TPs, no loc penalty. |
 
 ### Takeaway
-> The 4-stage scaffold is in place and unit-tested (157 tests green). Stage 1
-> (WAFT now accurate and trusted, SGBM baseline) and Stage 2 run with spot-check
-> validation. Stage 3 produces honest stereo-recoverable output (3D position + 2D
-> box); its per-method depth-sampling percentiles were just re-tuned on a
-> multi-sequence study (`experiments/percentile_choice.md`), and an end-to-end
-> matching re-validation at the new config is the immediate next step. Stage 4's
-> fusion core is complete and schema-flexible, but **the V2V result cannot be
-> demonstrated until CARLA data is wired in** — that remains the single biggest
-> gap between the current state and the project goal.
+> The full 4-stage pipeline now runs end-to-end and is unit-tested (157 tests
+> green). Stage 1 (WAFT accurate and trusted, SGBM baseline) and Stage 2 run with
+> spot-check validation. Stage 3 produces honest stereo-recoverable output (3D
+> position + 2D box) at re-tuned per-method depth-sampling percentiles. **Stage 4
+> — the project goal — is now demonstrated on CARLA V2V data:** cooperative fusion
+> roughly 2.5× single-agent recall (SGBM 0.21→0.54 over 20 frames), recovering 23
+> objects only the second vehicle could see, with no localization penalty. The
+> remaining gaps are scale and precision — the demonstration is 20 close-range
+> frames with vehicle-only GT, so the next step is a larger, multi-class CARLA
+> evaluation and reining in detector false positives.

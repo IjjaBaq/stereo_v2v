@@ -25,8 +25,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage2_detect import load_configs, load_model, run as run_stage2
+from utils.geometry import box_iou
 from utils.kitti_loader import load_image, load_labels
 from utils.validation_io import merge_samples
+from utils.visualization import draw_boxes, make_detection_visualization
 
 logger = logging.getLogger(__name__)
 
@@ -36,35 +38,6 @@ torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 
 KITTI_CLASSES = ("Car", "Pedestrian")
-
-
-# ---------------------------------------------------------------------------
-# IoU
-# ---------------------------------------------------------------------------
-
-def box_iou(box_a: dict, box_b: dict) -> float:
-    """Compute IoU between two boxes in x1y1x2y2 format.
-
-    Args:
-        box_a: Dict with keys x1, y1, x2, y2.
-        box_b: Dict with keys x1, y1, x2, y2.
-
-    Returns:
-        IoU value in [0, 1].
-    """
-    ix1 = max(box_a["x1"], box_b["x1"])
-    iy1 = max(box_a["y1"], box_b["y1"])
-    ix2 = min(box_a["x2"], box_b["x2"])
-    iy2 = min(box_a["y2"], box_b["y2"])
-
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    if inter == 0.0:
-        return 0.0
-
-    area_a = (box_a["x2"] - box_a["x1"]) * (box_a["y2"] - box_a["y1"])
-    area_b = (box_b["x2"] - box_b["x1"]) * (box_b["y2"] - box_b["y1"])
-    union  = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -211,88 +184,6 @@ def compute_pr_at_threshold(
         "precision":  float(precision),
         "recall":     float(recall),
     }
-
-
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
-def draw_boxes(
-    image: np.ndarray,
-    boxes: list[dict],
-    color: tuple[int, int, int],
-    label_prefix: str = "",
-) -> np.ndarray:
-    """Draw bounding boxes on image copy with label overlay.
-
-    Args:
-        image: BGR image, shape (H, W, 3), uint8.
-        boxes: List of dicts with keys label, x1, y1, x2, y2,
-               and optionally confidence and iou.
-        color: BGR color for boxes and text background.
-        label_prefix: Prefix for label text.
-
-    Returns:
-        Image copy with boxes drawn.
-    """
-    out  = image.copy()
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    for box in boxes:
-        x1, y1 = int(box["x1"]), int(box["y1"])
-        x2, y2 = int(box["x2"]), int(box["y2"])
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-
-        parts = [p for p in [
-            label_prefix,
-            box["label"],
-            f"{box['confidence']:.2f}" if "confidence" in box else "",
-            f"IoU={box['iou']:.2f}"    if "iou"        in box else "",
-        ] if p]
-        text = " ".join(parts)
-
-        (tw, th), _ = cv2.getTextSize(text, font, 0.5, 1)
-        cv2.rectangle(out, (x1, y1 - th - 4), (x1 + tw, y1), color, -1)
-        cv2.putText(out, text, (x1, y1 - 2), font, 0.5,
-                    (0, 0, 0), 1, cv2.LINE_AA)
-
-    return out
-
-
-def make_detection_visualization(
-    image: np.ndarray,
-    pred_boxes: list[dict],
-    gt_boxes: list[dict],
-    sample_id: str,
-) -> np.ndarray:
-    """Render predicted and GT boxes side by side with IoU annotations.
-
-    Args:
-        image: BGR left camera image.
-        pred_boxes: Predicted boxes from Stage 2.
-        gt_boxes: GT boxes.
-        sample_id: For title overlay.
-
-    Returns:
-        Side-by-side BGR image.
-    """
-    pred_annotated = [
-        {**p, "iou": max(
-            (box_iou(p, g) for g in gt_boxes if g["label"] == p["label"]),
-            default=0.0,
-        )}
-        for p in pred_boxes
-    ]
-    pred_vis = draw_boxes(image, pred_annotated, (0, 255, 0),  "Pred")
-    gt_vis   = draw_boxes(image, gt_boxes,       (0, 0, 255),  "GT")
-
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(pred_vis, f"Predictions [{sample_id}]",
-                (10, 25), font, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(gt_vis, "Ground Truth",
-                (10, 25), font, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-
-    return np.concatenate([pred_vis, gt_vis], axis=1)
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,8 @@ from stages.stage2_detect import (
     load_model,
     run as run_stage2,
 )
-from stages.validate_stage2_detect import box_iou, compute_ap
+from stages.validate_stage2_detect import compute_ap
+from utils.geometry import box_iou
 from utils.kitti_loader import load_image, load_labels
 
 # ---------------------------------------------------------------------------

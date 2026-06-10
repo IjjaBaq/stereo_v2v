@@ -1,9 +1,9 @@
 # Validation Summary
 
-Full validated results from the end-to-end pipeline regeneration on **2026-06-06**.
-All `outputs/` were cleared and regenerated from scratch; no code or config was
-modified during the run. Numbers below are taken verbatim from screen logs and
-the per-stage `validation_results.json` files — nothing was recalculated.
+Validated results from the end-to-end pipeline. Stages 1–3 are from the
+regeneration on **2026-06-06**; **Stage 4 (V2V fusion) was run on 2026-06-10**
+once CARLA data was wired in. Numbers below are taken verbatim from the per-stage
+`validation_results.json` files — nothing was recalculated.
 
 Seeds fixed at every entry point (`random`, `numpy`, `torch` = 42).
 
@@ -158,39 +158,83 @@ FP-heavy sequences.
 
 ---
 
-## Stage 4 — V2V Cooperative Fusion
+## Stage 4 — V2V Cooperative Fusion (CARLA, 20 frames)
 
-**Status: pending CARLA data collection.** `outputs/fusion/` is intentionally
-empty. Stage 4 is CARLA-only (true simultaneous multi-agent capture); the loader
-(`utils/carla_loader.py`) and validator (`validate_stage4_fusion.py`) are stubs
-until a real CARLA export is wired in. The fusion core (`utils/fusion.py`) is
-complete and unit-tested, and is schema-agnostic (handles both Stage-3
-position-only outputs and full CARLA GT boxes with `l/w/h/heading`).
+Source: `outputs/fusion/carla/{sgbm,waft}/validation_results.json` (run 2026-06-10,
+`--scenario data/carla`, frames `000054`–`000282`, spread across the FOV-overlap
+range). Scenario: Town10HD intersection, two moving ego vehicles.
 
-### Expected metrics once CARLA is wired
-- **Recall improvement vs single vehicle:** cooperative recall (A ∪ B fused)
-  minus Vehicle-A-alone recall — the headline V2V benefit.
-- **Localization error:** fused 3D centre error vs GT (m), compared against
-  single-agent error.
-- **TP / FP / FN — fused vs Vehicle-A-alone:** confusion counts for the fused
-  scene against A's solo detections, showing objects recovered by fusion.
-- **B-unique true positives:** GT objects detected only by Vehicle B (outside A's
-  field of view / occluded for A) that fusion adds to A's scene.
+Each frame compares three prediction sets — **A-alone**, **B-alone** (B's Stages
+1–3 output registered into A's frame), **Fused** — against a **cooperative GT**:
+every vehicle visible to A *or* B, deduplicated by `actor_id` (A-visible instance
+wins). Matching is greedy BEV (x-z) centre distance per class, `matching.max_dist`
+from `config/stage4.yaml` (Car ≤ 2.0 m, Ped ≤ 1.0 m). All 85 coop-GT objects
+across the 20 frames are Cars.
 
-> **Pending CARLA wiring:** the full metric schema (per-agent-solo & fused
-> TP/FP/FN, `recall_improvement`, `b_unique_tp`, `localization_error_A` vs
-> `localization_error_fused`, depth-range breakdown matching Stage 3, per-class
-> Car/Pedestrian breakdown, mean inference time per frame) is now documented in
-> the `validate_stage4_fusion.py` module docstring so it is ready to implement
-> once a CARLA export exists. No code path runs yet.
+### Headline — cooperative gain over single-agent A
+| Method | Recall A-alone | Recall B-alone | **Recall Fused** | Δ recall | **B-unique TP** | Mean infer (s/frame) |
+|--------|:--------------:|:--------------:|:----------------:|:--------:|:---------------:|:--------------------:|
+| **SGBM** | 0.2118 | 0.3765 | **0.5412** | **+0.3294** | **23** | 6.79 |
+| WAFT | 0.0824 | 0.2941 | **0.3765** | **+0.2941** | 15 | 160.4 |
+
+Fusion roughly **2.5× Vehicle-A-alone recall** (SGBM 0.21 → 0.54), recovering
+**23** objects (SGBM) that only Vehicle B could see — the core V2V benefit, end to
+end.
+
+### Full per-method breakdown (TP / FP / FN · precision · BEV loc-err)
+| Method | Set | TP | FP | FN | Precision | Loc-err (m) ↓ |
+|--------|-----|:--:|:--:|:--:|:---------:|:-------------:|
+| SGBM | A-alone | 18 | 102 | 67 | 0.150 | 1.326 |
+| SGBM | B-alone | 32 | 59 | 53 | 0.352 | 1.295 |
+| SGBM | **Fused** | 46 | 157 | 39 | 0.227 | 1.305 |
+| WAFT | A-alone | 7 | 126 | 78 | 0.053 | 1.755 |
+| WAFT | B-alone | 25 | 79 | 60 | 0.240 | 1.378 |
+| WAFT | **Fused** | 32 | 204 | 53 | 0.136 | 1.461 |
+
+- `recall_improvement` = +0.3294 (SGBM) / +0.2941 (WAFT); `precision_change` =
+  +0.0766 / +0.0830; `loc_error_improvement` = +0.0212 m / +0.2941 m.
+- Fusion improves recall **and** precision over A-alone for both methods, with no
+  localization penalty (loc-err essentially flat / improved).
+
+### Per-class (Car · TP/FP/FN — fused)
+Coop-GT is vehicles only, so **Car** is the entire real signal. **Pedestrian** has
+**0 GT**, so every ped detection is a false positive (RT-DETR hallucinations) —
+SGBM fused 86 ped FP, WAFT 92 — which is what drags overall precision down.
+
+| Method | Car fused TP | Car fused FP | Car fused FN | Car loc-err (m) |
+|--------|:------------:|:------------:|:------------:|:---------------:|
+| SGBM | 46 | 71 | 39 | 1.305 |
+| WAFT | 32 | 112 | 53 | 1.461 |
+
+### GT-depth-range breakdown (fused TP count · loc-err m)
+All cooperative GT is within 0–20 m (close-range intersection); the 20–40 m and
+40 m+ bins are empty.
+
+| Range | SGBM fused (n · m) | WAFT fused (n · m) |
+|-------|:------------------:|:------------------:|
+| 0–10 m  | 19 · 1.018 | 8 · 1.463 |
+| 10–20 m | 16 · 1.469 | 15 · 1.548 |
+
+### Why SGBM beats WAFT (again)
+Same mechanism as Stage 3: WAFT's dense depth lifts *every* detection (more FPs,
+lower precision and recall after matching), while SGBM's sparse,
+consistency-checked depth filters weak detections. SGBM is also ~24× faster
+(6.79 vs 160.4 s/frame on CPU). **SGBM is the method to cite for Stage 4.**
+
+> Caveats: 20 frames, one scenario, close range, vehicle-only GT — an indicative
+> V2V demonstration, not a benchmark. The fusion core (`utils/fusion.py`) is
+> schema-agnostic (handles Stage-3 position-only and full CARLA GT boxes with
+> `l/w/h/heading`); this run uses the detector path (Stages 1–3 per agent).
 
 ---
 
-## Output file inventory (this run)
+## Output file inventory
 - Stage 1: 10 `*_disp.npy` + 10 `*_val.png` per method, `validation_results.json` ×2
 - Stage 2: 10 `*_boxes2d.json` + 10 `*_det.png`, `validation_results.json`
 - Stage 3: 24 `*_lift3d.json` + 24 `*_2d.png` + 24 `*_bev.png` per method,
   `validation_results.json` ×5 per method (one per sequence)
-- 13 `validation_results.json` files total (2 + 1 + 5 + 5).
+- Stage 4: per method (`carla/{sgbm,waft}/`) 20 `carla_*_bev.png` +
+  `validation_results.json`; per-agent `carla/` subtrees under `depth/`,
+  `detections/`, `lift3d/`.
 
 See `outputs/README.md` for the full directory structure and file formats.

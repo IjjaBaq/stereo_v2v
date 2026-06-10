@@ -30,6 +30,33 @@ np.random.seed(42)
 
 
 # ---------------------------------------------------------------------------
+# Per-method config
+# ---------------------------------------------------------------------------
+
+def apply_method_overrides(stage3_cfg: dict, method: str) -> dict:
+    """Merge the per-method Stage-3 overrides over the base config.
+
+    The empirically-tuned per-method values (``depth_sampling``,
+    ``crop_top_frac``, ``min_depth_m`` for sgbm/waft) live in
+    ``config/stage3.yaml`` under ``per_method_overrides``. This returns a new
+    config dict with that method's block merged over the defaults, so both the
+    Stage-3 validator and the Stage-4 CARLA detector path read the same source
+    of truth (no constants duplicated in validation scripts).
+
+    Args:
+        stage3_cfg: Loaded stage3.yaml config dict.
+        method: Depth method ('sgbm' | 'waft').
+
+    Returns:
+        New config dict with ``per_method_overrides[method]`` merged in. If no
+        override block exists for the method, the input config is returned
+        unchanged (as a shallow copy).
+    """
+    overrides = stage3_cfg.get("per_method_overrides", {}).get(method, {})
+    return {**stage3_cfg, **overrides}
+
+
+# ---------------------------------------------------------------------------
 # Depth sampling
 # ---------------------------------------------------------------------------
 

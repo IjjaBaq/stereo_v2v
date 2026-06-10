@@ -11,19 +11,30 @@ disp_dir: ./outputs/depth/sgbm
 min_valid_pixels: 10          # Skip detection if fewer valid depth pixels than this
                               # Prevents garbage positions from empty frustums
 
-# Depth sampling strategy.
-# validate_stage3_lift.py overrides this per method (percentile_20 for sgbm,
-# percentile_35 for waft — tuned in experiments/percentile_choice.md). This
-# default applies when running stage3_lift.py standalone with sgbm output.
-depth_sampling: percentile_20
-
-# ROI refinement — removes ground/road contamination from dense depth maps.
-# validate_stage3_lift.py overrides these per method (1.0/null for sgbm,
-# 0.40/6.0 for waft). Defaults here are safe for standalone sgbm use.
+# Depth sampling strategy + ROI refinement.
+# These three (depth_sampling, crop_top_frac, min_depth_m) are the standalone
+# defaults (safe for sgbm). The pipeline (validate_stage3_lift.py and the
+# Stage-4 CARLA detector path) instead applies the per-method block below via
+# stage3_lift.apply_method_overrides(cfg, method) — single source of truth for
+# the empirically-tuned values (see experiments/percentile_choice.md).
 # crop_top_frac: keep only the top fraction of the box height.
 # min_depth_m: gate out disparity values closer than this distance.
+depth_sampling: percentile_20
 crop_top_frac: 1.0
 min_depth_m: null
+
+# Per-method overrides — merged over the defaults above by
+# stage3_lift.apply_method_overrides(cfg, method). Tuned in
+# experiments/percentile_choice.md.
+per_method_overrides:
+  sgbm:
+    depth_sampling: percentile_20   # sparse matches already foreground-biased
+    crop_top_frac: 1.0              # no crop
+    min_depth_m: null
+  waft:
+    depth_sampling: percentile_35   # dense map, mid-low percentile
+    crop_top_frac: 0.40            # top 40% of box removes road/ground below
+    min_depth_m: 6.0               # gate out pixels closer than 6m (road surface)
 
 # --- Matching (validation) ---
 # Predictions and GT are matched by 3D center distance, per class — Stage 3

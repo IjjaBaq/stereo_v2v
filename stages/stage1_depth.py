@@ -29,6 +29,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "models" / "WAFT-Stereo"))
 from utils.calib import extract_stereo_params
 from utils.config_loader import load_configs
 from utils.kitti_loader import load_calib, load_image
+from utils.visualization import colorize_disparity
 
 logger = logging.getLogger(__name__)
 
@@ -232,34 +233,6 @@ def disparity_to_depth(
     return depth
 
 
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
-def colorize_disparity(disp: np.ndarray) -> np.ndarray:
-    """Render a float32 disparity map as a uint8 BGR colormap image.
-
-    Args:
-        disp: Disparity map, shape (H, W), float32. np.nan = invalid.
-
-    Returns:
-        Colorized disparity image, shape (H, W, 3), uint8.
-        Invalid pixels are rendered black.
-    """
-    valid_mask = ~np.isnan(disp)
-    disp_vis   = np.zeros_like(disp)
-
-    if valid_mask.any():
-        d_min = float(np.nanmin(disp))
-        d_max = float(np.nanmax(disp))
-        if d_max > d_min:
-            disp_vis[valid_mask] = (
-                (disp[valid_mask] - d_min) / (d_max - d_min) * 255.0
-            )
-
-    colored = cv2.applyColorMap(disp_vis.astype(np.uint8), cv2.COLORMAP_MAGMA)
-    colored[~valid_mask] = 0
-    return colored
 
 
 # ---------------------------------------------------------------------------

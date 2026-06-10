@@ -294,6 +294,65 @@ def _project_center(box_cam: dict, P2: np.ndarray) -> tuple[float, float]:
     return float(p[0] / p[2]), float(p[1] / p[2])
 
 
+def project_box_to_2d(
+    box_cam: dict,
+    P2: np.ndarray,
+    img_w: float,
+    img_h: float,
+) -> dict:
+    """Project a 3D camera-frame box to a 2D image bounding box.
+
+    Builds the box's 8 corners from its centre, dimensions (l, w, h) and
+    heading (``rotation_y``, rotation about the camera vertical axis in KITTI
+    convention X→right, Y→down, Z→forward), projects each corner with ``P2``,
+    and returns the enclosing axis-aligned rectangle clipped to the image. Used
+    to draw CARLA GT (which is 3D, not x1y1x2y2) on the detection visualization.
+
+    Args:
+        box_cam: Camera-frame box with x, y, z (centre), l, w, h, and
+            ``rotation_y`` (or ``heading``) in radians.
+        P2: 3x4 left-camera projection matrix.
+        img_w: Image width in pixels (for clipping).
+        img_h: Image height in pixels (for clipping).
+
+    Returns:
+        Dict with label (carried through if present) and x1, y1, x2, y2.
+    """
+    l, w, h = float(box_cam["l"]), float(box_cam["w"]), float(box_cam["h"])
+    ry = float(box_cam.get("rotation_y", box_cam.get("heading", 0.0)))
+
+    # Centre-based corner offsets (object frame): length along X, height along
+    # Y (down), width along Z, before the heading rotation about Y.
+    x_c = np.array([ l / 2,  l / 2, -l / 2, -l / 2,  l / 2,  l / 2, -l / 2, -l / 2])
+    y_c = np.array([ h / 2,  h / 2,  h / 2,  h / 2, -h / 2, -h / 2, -h / 2, -h / 2])
+    z_c = np.array([ w / 2, -w / 2, -w / 2,  w / 2,  w / 2, -w / 2, -w / 2,  w / 2])
+
+    cos_r, sin_r = math.cos(ry), math.sin(ry)
+    R = np.array([[cos_r, 0.0, sin_r], [0.0, 1.0, 0.0], [-sin_r, 0.0, cos_r]])
+    corners = R @ np.vstack([x_c, y_c, z_c])
+    corners[0] += box_cam["x"]
+    corners[1] += box_cam["y"]
+    corners[2] += box_cam["z"]
+
+    # Clamp depth to a small positive value so corners that fall behind the
+    # image plane do not blow up the projection.
+    corners[2] = np.maximum(corners[2], 0.1)
+
+    homog = P2 @ np.vstack([corners, np.ones(8)])
+    u = homog[0] / homog[2]
+    v = homog[1] / homog[2]
+
+    box2d = {
+        "x1": float(np.clip(u.min(), 0.0, img_w)),
+        "y1": float(np.clip(v.min(), 0.0, img_h)),
+        "x2": float(np.clip(u.max(), 0.0, img_w)),
+        "y2": float(np.clip(v.max(), 0.0, img_h)),
+    }
+    if "label" in box_cam:
+        box2d["label"] = box_cam["label"]
+    return box2d
+
+
 # ---------------------------------------------------------------------------
 # Per-agent GT detections (FOV-filtered world boxes in camera frame)
 # ---------------------------------------------------------------------------
@@ -388,6 +447,41 @@ def _sanity_check_shared_vehicles(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def load_carla_transform(
+    scenario_dir: str,
+    timestamp: str,
+    agent_a: str | None = None,
+    agent_b: str | None = None,
+) -> tuple[np.ndarray, str, str, str]:
+    """Compose the inter-agent transform for a pair, from poses only.
+
+    Unlike ``load_carla_pair`` this reads no GT boxes and runs no detector — it
+    needs only the two agents' poses. The Stage-4 detector path uses it to get
+    ``T_b_to_a`` to register Vehicle B's per-agent detections into A's frame.
+
+    Args:
+        scenario_dir: Path to one CARLA scenario folder (contains agent subdirs).
+        timestamp: Timestamp string identifying the frame.
+        agent_a: Vehicle A agent ID. None → first agent in the scenario.
+        agent_b: Vehicle B agent ID. None → second agent in the scenario.
+
+    Returns:
+        (T_b_to_a, agent_a, agent_b, scene_id) — 4x4 transform mapping B's
+        camera frame into A's, the resolved agent IDs, and a unique scene
+        identifier (same format as ``load_carla_pair``).
+    """
+    scenario = Path(scenario_dir)
+    ts = _normalize_ts(timestamp)
+    agent_a, agent_b = _resolve_agents(scenario, agent_a, agent_b)
+
+    pose_a = _read_pose(scenario, agent_a, ts)
+    pose_b = _read_pose(scenario, agent_b, ts)
+    T_b_to_a = _inter_agent_transform(pose_a, pose_b)
+
+    scene_id = f"{scenario.name}_{agent_a}_{agent_b}_{ts}"
+    return T_b_to_a, agent_a, agent_b, scene_id
+
 
 def load_carla_pair(
     scenario_dir: str,

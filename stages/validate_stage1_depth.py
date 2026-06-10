@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from stages.stage1_depth import load_configs, load_waft_model, run as run_stage1
 from utils.kitti_loader import load_disparity_gt, load_image
 from utils.validation_io import merge_samples
+from utils.visualization import make_side_by_side
 
 logger = logging.getLogger(__name__)
 
@@ -109,83 +110,6 @@ def evaluate(pred: np.ndarray, gt: np.ndarray) -> dict:
         "valid_gt_px":  gt_count,
         "evaluated_px": int(valid.sum()),
     }
-
-
-# ---------------------------------------------------------------------------
-# Visualization
-# ---------------------------------------------------------------------------
-
-def make_side_by_side(
-    left_img: np.ndarray,
-    pred: np.ndarray,
-    gt: np.ndarray,
-    sample_id: str,
-    epe: float,
-    d1: float,
-    method: str,
-) -> np.ndarray:
-    """Render a 3-panel validation figure for one sample.
-
-    Layout (top to bottom):
-        - Top row, full width: the original left camera image.
-        - Bottom left:  predicted disparity, colorized.
-        - Bottom right: GT disparity, colorized.
-
-    Predicted and GT disparity share a single colour scale so they are
-    directly comparable. The top image is resized to the disparity row's
-    width (2*W) and height (H) so all three panels are the same height.
-
-    Args:
-        left_img: Left camera image, shape (H, W, 3), uint8 BGR.
-        pred: Predicted disparity, shape (H, W), float32.
-        gt:   GT disparity, shape (H, W), float32.
-        sample_id: For the title overlay.
-        epe: EPE value.
-        d1: D1 value.
-        method: Method name for label.
-
-    Returns:
-        Stacked BGR figure, shape (2*H, 2*W, 3), uint8.
-    """
-    combined = np.concatenate([
-        pred[~np.isnan(pred)].ravel(),
-        gt[~np.isnan(gt)].ravel(),
-    ])
-    d_min = float(combined.min()) if combined.size else 0.0
-    d_max = float(combined.max()) if combined.size else 1.0
-
-    def _colorize(disp: np.ndarray) -> np.ndarray:
-        valid = ~np.isnan(disp)
-        norm  = np.zeros_like(disp)
-        if d_max > d_min:
-            norm[valid] = (disp[valid] - d_min) / (d_max - d_min) * 255.0
-        colored = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_MAGMA)
-        colored[~valid] = 0
-        return colored
-
-    pred_vis = _colorize(pred)
-    gt_vis   = _colorize(gt)
-
-    font  = cv2.FONT_HERSHEY_SIMPLEX
-    white = (255, 255, 255)
-
-    def _label(img: np.ndarray, text: str, scale: float = 0.6) -> None:
-        # Black outline under white text so labels read on any background.
-        cv2.putText(img, text, (10, 25), font, scale, (0, 0, 0),   3, cv2.LINE_AA)
-        cv2.putText(img, text, (10, 25), font, scale, white,       1, cv2.LINE_AA)
-
-    _label(pred_vis, f"{method.upper()}  EPE={epe:.2f}px  D1={d1:.1f}%")
-    _label(gt_vis,   "Ground Truth")
-
-    bottom = np.concatenate([pred_vis, gt_vis], axis=1)
-
-    # Top row spans the full figure width (2*W) at the disparity row's height
-    # (H), so all three panels are the same height.
-    top_h, top_w = bottom.shape[:2]
-    top = cv2.resize(left_img, (top_w, top_h), interpolation=cv2.INTER_AREA)
-    _label(top, f"Input Image [{sample_id}]", scale=0.9)
-
-    return np.concatenate([top, bottom], axis=0)
 
 
 # ---------------------------------------------------------------------------

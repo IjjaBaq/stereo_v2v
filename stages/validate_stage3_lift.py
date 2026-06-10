@@ -34,8 +34,6 @@ import random
 import sys
 from pathlib import Path
 
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import yaml
@@ -44,10 +42,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage1_depth import run as run_stage1
 from stages.stage2_detect import load_model, run as run_stage2
-from stages.stage3_lift import load_configs, run as run_stage3
+from stages.stage3_lift import apply_method_overrides, load_configs, run as run_stage3
 from utils.geometry import center_distance
 from utils.kitti_tracking_loader import load_tracking_frame
 from utils.validation_io import merge_samples
+from utils.visualization import (
+    make_2d_overlay_visualization,
+    make_bev_visualization,
+    make_detection_overlay,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,41 +59,20 @@ np.random.seed(42)
 
 KITTI_CLASSES = ("Car", "Pedestrian")
 
-# Per-method depth-sampling parameters — tuned on a multi-sequence static-car
-# sweep (KITTI tracking 0000-0004; see experiments/percentile_choice.md).
+# Per-method depth-sampling parameters (depth_sampling, crop_top_frac,
+# min_depth_m) now live in config/stage3.yaml under `per_method_overrides` and
+# are applied via stage3_lift.apply_method_overrides(cfg, method) — single
+# source of truth shared with the Stage-4 CARLA detector path.
 #
-# The two methods need OPPOSITE percentiles because their valid-pixel
-# distributions differ:
-#
-# SGBM is sparse: the left-right consistency check nulls smooth background to
-# NaN, so the surviving valid pixels already sit on the car's near surface
-# (~1-6% are far background vs ~47-91% nearer than the box centre, measured in
-# real boxes). A HIGH percentile therefore picks the closest surface pixels and
-# under-shoots the box-centre depth; a LOW percentile (percentile_20) lands
-# nearest the centre while still dodging the small residual far-background tail a
-# yet-lower percentile would catch. The old percentile_75 was the WORST end of
-# the curve — it over-corrected for a background contamination that SGBM's
-# sparsity had already removed (aggregate MAE 4.27m @p75 vs 1.72m @p20).
-#
-# WAFT is dense: boxes contain object + road + background. A top-40% vertical
-# crop plus a 6m min-depth gate remove most ground; percentile_35 then best
-# matches centre depth with near-zero bias (the old percentile_60 sampled the
-# near surface, bias ~-2.95m → ~-0.64m @p35; aggregate MAE 2.97m → 3.44m but
-# the MAE rise is far-range WAFT-depth error, not sampling — see the doc).
-DEPTH_SAMPLING_BY_METHOD: dict[str, str] = {
-    "sgbm": "percentile_20",
-    "waft": "percentile_35",
-}
-
-CROP_TOP_FRAC_BY_METHOD: dict[str, float] = {
-    "sgbm": 1.0,    # no crop — sparse matches already foreground-biased
-    "waft": 0.40,   # top 40% of box height removes road/ground below objects
-}
-
-MIN_DEPTH_M_BY_METHOD: dict[str, float | None] = {
-    "sgbm": None,
-    "waft": 6.0,    # gate out pixels at depths < 6m (road surface artifacts)
-}
+# Tuned on a multi-sequence static-car sweep (KITTI tracking 0000-0004; see
+# experiments/percentile_choice.md). The two methods need OPPOSITE percentiles
+# because their valid-pixel distributions differ:
+#  - SGBM is sparse: the left-right consistency check nulls smooth background to
+#    NaN, so valid pixels already sit on the car's near surface. percentile_20
+#    lands nearest the box centre; the old percentile_75 over-corrected for a
+#    background contamination SGBM had already removed (MAE 4.27m@p75 vs 1.72m@p20).
+#  - WAFT is dense: a top-40% crop + 6m min-depth gate remove most ground, then
+#    percentile_35 matches centre depth with near-zero bias.
 
 
 # ---------------------------------------------------------------------------
@@ -294,152 +276,6 @@ def build_pair_records(
 
 
 # ---------------------------------------------------------------------------
-# Visualizations
-# ---------------------------------------------------------------------------
-
-def make_bev_visualization(
-    pred_boxes: list[dict],
-    gt_boxes: list[dict],
-    matches: list[tuple[int, int]],
-    frame_id: int,
-    seq_id: str,
-    output_path: Path,
-) -> None:
-    """Render a BEV scatter of predicted and GT 3D centers (X vs Z).
-
-    Stage 3 emits position only (no size/heading), so centers are drawn as
-    scatter points rather than rotated footprints. Predictions in green,
-    matched GT in red, unmatched GT in orange. Matched pairs are connected
-    with yellow dashed lines.
-
-    Args:
-        pred_boxes: Predicted 3D position dicts with keys x, z, label.
-        gt_boxes:   GT 3D position dicts with keys x, z, label.
-        matches:    TP (pred_idx, gt_idx) pairs.
-        frame_id:   Frame index for title.
-        seq_id:     Sequence ID for title.
-        output_path: Path to save PNG.
-    """
-    if not pred_boxes and not gt_boxes:
-        logger.warning("No boxes for seq=%s frame=%06d — skipping BEV.",
-                       seq_id, frame_id)
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 12))
-    ax.set_facecolor("#1a1a1a")
-    fig.patch.set_facecolor("#1a1a1a")
-
-    for pi, box in enumerate(pred_boxes):
-        ax.scatter(box["x"], box["z"], c="#00ff88", marker="o", s=40)
-        ax.text(box["x"], box["z"], f" {box['label'][0]}{pi}",
-                color="#00ff88", fontsize=6, ha="left", va="center")
-
-    matched_gt_idx = {gi for _, gi in matches}
-    for gi, box in enumerate(gt_boxes):
-        color = "#ff4444" if gi in matched_gt_idx else "#ff8800"
-        ax.scatter(box["x"], box["z"], c=color, marker="x", s=40)
-        ax.text(box["x"], box["z"], f" {box['label'][0]}{gi}",
-                color=color, fontsize=6, ha="left", va="center")
-
-    for pi, gi in matches:
-        p = pred_boxes[pi]
-        g = gt_boxes[gi]
-        ax.plot([p["x"], g["x"]], [p["z"], g["z"]],
-                color="yellow", linewidth=0.8, linestyle="--", alpha=0.6)
-
-    ax.autoscale()
-    all_z = [b["z"] for b in pred_boxes + gt_boxes]
-    if all_z:
-        ax.set_ylim(min(all_z) - 5, max(all_z) + 5)
-
-    x_min, _ = ax.get_xlim()
-    z_min, _ = ax.get_ylim()
-    ax.plot([x_min + 1, x_min + 11], [z_min + 1, z_min + 1],
-            color="white", linewidth=2)
-    ax.text(x_min + 6, z_min + 1.3, "10 m",
-            color="white", ha="center", fontsize=8)
-
-    ax.legend(
-        handles=[
-            mpatches.Patch(color="#00ff88", label="Predicted center"),
-            mpatches.Patch(color="#ff4444", label="GT (matched)"),
-            mpatches.Patch(color="#ff8800", label="GT (unmatched)"),
-        ],
-        loc="upper right", facecolor="#333333",
-        labelcolor="white", fontsize=8,
-    )
-    ax.set_xlabel("X (metres)", color="white")
-    ax.set_ylabel("Z — depth (metres)", color="white")
-    ax.tick_params(colors="white")
-    ax.set_title(f"BEV — seq {seq_id} frame {frame_id:06d}", color="white")
-    ax.set_aspect("equal")
-    ax.grid(True, color="#333333", linewidth=0.5)
-
-    plt.tight_layout()
-    plt.savefig(str(output_path), dpi=150, bbox_inches="tight",
-                facecolor=fig.get_facecolor())
-    plt.close()
-    logger.info("Saved BEV → %s", output_path)
-
-
-def make_2d_overlay_visualization(
-    image: np.ndarray,
-    pred_boxes: list[dict],
-    gt_boxes: list[dict],
-    matches: list[tuple[int, int]],
-    frame_id: int,
-    seq_id: str,
-    output_path: Path,
-) -> None:
-    """Draw 2D boxes (x1,y1,x2,y2) on the left camera image.
-
-    Stage 3 no longer emits 3D extents/heading, so this overlays the source
-    2D boxes instead of projected 3D wireframes. Predictions in green,
-    matched GT in dark red, unmatched GT in orange.
-
-    Args:
-        image: Left camera BGR image (H, W, 3) uint8.
-        pred_boxes: Predicted box dicts with x1,y1,x2,y2,label,confidence.
-        gt_boxes:   GT box dicts with x1,y1,x2,y2,label.
-        matches:    TP (pred_idx, gt_idx) pairs.
-        frame_id:   Frame index for overlay.
-        seq_id:     Sequence ID for overlay.
-        output_path: Path to save PNG.
-    """
-    import cv2
-
-    out = image.copy()
-
-    def draw_box(box, color, text):
-        x1, y1 = int(box["x1"]), int(box["y1"])
-        x2, y2 = int(box["x2"]), int(box["y2"])
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(out, text, (x1, max(y1 - 5, 15)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-
-    matched_gt_idx = {gi for _, gi in matches}
-
-    for gi, gt in enumerate(gt_boxes):
-        color = (50, 50, 255) if gi in matched_gt_idx else (0, 100, 255)
-        draw_box(gt, color, f"GT:{gt['label']}")
-
-    for pred in pred_boxes:
-        draw_box(pred, (0, 220, 80),
-                 f"{pred['label']} {pred['z']:.1f}m {pred['confidence']:.2f}")
-
-    cv2.putText(out, f"seq {seq_id} frame {frame_id:06d}",
-                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(out,
-                "Pred (green)  GT matched (dark red)  GT unmatched (orange)",
-                (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                (200, 200, 200), 1, cv2.LINE_AA)
-
-    cv2.imwrite(str(output_path), out)
-    logger.info("Saved 2D overlay → %s", output_path)
-
-
-# ---------------------------------------------------------------------------
 # Per-frame validation
 # ---------------------------------------------------------------------------
 
@@ -505,26 +341,13 @@ def validate_frame(
     )
     
     # Save detection visualization
-    import cv2 as _cv2
-    det_vis = frame["left"].copy()
-    for box in s2["boxes"]:
-        x1,y1,x2,y2 = int(box["x1"]),int(box["y1"]),int(box["x2"]),int(box["y2"])
-        _cv2.rectangle(det_vis, (x1,y1), (x2,y2), (0,255,0), 2)
-        _cv2.putText(det_vis, f"{box['label']} {box['confidence']:.2f}",
-                    (x1, max(y1-5,15)), _cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45, (0,255,0), 1, _cv2.LINE_AA)
-    det_png = Path(det_out) / f"{frame_id:06d}_det.png"
-    _cv2.imwrite(str(det_png), det_vis)
-    logger.info("Saved detection visualization → %s", det_png)
+    make_detection_overlay(
+        frame["left"], s2["boxes"], Path(det_out) / f"{frame_id:06d}_det.png",
+    )
 
     # Stage 3 — lift to 3D
-    # Override sampling params per method — empirically validated
-    stage3_cfg_run = {
-        **stage3_cfg,
-        "depth_sampling": DEPTH_SAMPLING_BY_METHOD[method],
-        "crop_top_frac":  CROP_TOP_FRAC_BY_METHOD[method],
-        "min_depth_m":    MIN_DEPTH_M_BY_METHOD[method],
-    }
+    # Apply per-method sampling overrides from config (empirically validated)
+    stage3_cfg_run = apply_method_overrides(stage3_cfg, method)
     s3 = run_stage3(
         sample_id=f"{frame_id:06d}",
         base_cfg=base_cfg,
@@ -637,14 +460,17 @@ if __name__ == "__main__":
 
     all_results: list[dict] = []
 
+    # Resolve the per-method Stage-3 params from config for logging/summary.
+    method_cfg = apply_method_overrides(stage3_cfg, args.method)
+
     with mlflow.start_run(
         run_name=f"seq{args.seq_id}_{args.method}_{len(args.frame_ids)}frames"
     ):
         mlflow.log_param("seq_id",         args.seq_id)
         mlflow.log_param("method",         args.method)
-        mlflow.log_param("depth_sampling", DEPTH_SAMPLING_BY_METHOD[args.method])
-        mlflow.log_param("crop_top_frac",  CROP_TOP_FRAC_BY_METHOD[args.method])
-        mlflow.log_param("min_depth_m",    MIN_DEPTH_M_BY_METHOD[args.method])
+        mlflow.log_param("depth_sampling", method_cfg["depth_sampling"])
+        mlflow.log_param("crop_top_frac",  method_cfg["crop_top_frac"])
+        mlflow.log_param("min_depth_m",    method_cfg["min_depth_m"])
         mlflow.log_param("n_frames",       len(args.frame_ids))
         mlflow.log_param("frame_ids",      str(args.frame_ids))
         mlflow.log_param("stage3_method",  stage3_cfg["method"])
@@ -689,7 +515,7 @@ if __name__ == "__main__":
         summary: dict = {
             "seq_id":         args.seq_id,
             "method":         args.method,
-            "depth_sampling": DEPTH_SAMPLING_BY_METHOD[args.method],
+            "depth_sampling": method_cfg["depth_sampling"],
             "n_frames":       len(valid),
         }
 

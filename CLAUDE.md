@@ -23,8 +23,9 @@
   (x, y, z) + carries the source 2D box — no size/heading (not recoverable
   from stereo at range). Validation matches preds↔GT by 3D center distance.
 - **CARLA** → full pipeline incl. Stage 4 V2V fusion (true simultaneous
-  multi-agent; can also produce stereo for Stages 1-3). The CARLA loader
-  (`utils/carla_loader.py`) is a documented STUB until a real export is wired in.
+  multi-agent; can also produce stereo for Stages 1-3). Data is wired in at
+  `data/carla` (Town10HD intersection, 300 frames, two moving ego vehicles);
+  the CARLA loader (`utils/carla_loader.py`) is fully implemented.
 
 ## KITTI Conventions
 - Calib keys: P2, P3, R_rect_00, Tr_velo_to_cam
@@ -53,7 +54,7 @@
 - `outputs/detections/object/`           Stage 2 object split
 - `outputs/detections/tracking/{seq_id}/` Stage 2 tracking
 - `outputs/lift3d/{method}/{seq_id}/`   Stage 3 tracking only
-- `outputs/fusion/carla/{scenario}/`     Stage 4 CARLA fusion
+- `outputs/fusion/carla/{method}/`       Stage 4 CARLA fusion
 
 ## WAFT Notes
 - Run `--method waft` from the project root so WAFT-Stereo imports
@@ -64,6 +65,8 @@
 ## Known Issues
 - Stage 3 only evaluated on tracking split — object split has misaligned
   stereo and detection frames (different scenes)
-- Stage 4 (`utils/carla_loader.py`, `validate_stage4_fusion.py`) is stubbed
-  pending a CARLA export; the fusion core (`utils/fusion.py`) is complete and
-  unit-tested.
+- Stage 4 is wired and validated on CARLA (`data/carla`): `carla_loader.py`,
+  `stage4_fusion.py` (detector path), and `validate_stage4_fusion.py` all run
+  end-to-end; the fusion core (`utils/fusion.py`) is complete and unit-tested.
+  Latest SGBM run (20 frames) shows fusion recall 0.21→0.54 (+0.33), 23 B-unique
+  TPs — see VALIDATION_SUMMARY.md.
