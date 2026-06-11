@@ -171,15 +171,35 @@ wins). Matching is greedy BEV (x-z) centre distance per class, `matching.max_dis
 from `config/stage4.yaml` (Car ≤ 2.0 m, Ped ≤ 1.0 m). All 85 coop-GT objects
 across the 20 frames are Cars.
 
-### Headline — cooperative gain over single-agent A
-| Method | Recall A-alone | Recall B-alone | **Recall Fused** | Δ recall | **B-unique TP** | Mean infer (s/frame) |
-|--------|:--------------:|:--------------:|:----------------:|:--------:|:---------------:|:--------------------:|
-| **SGBM** | 0.2118 | 0.3765 | **0.5412** | **+0.3294** | **23** | 6.79 |
-| WAFT | 0.0824 | 0.2941 | **0.3765** | **+0.2941** | 15 | 160.4 |
+Cooperation is **mutual** — the fused output is shared, so both agents benefit and
+both gains are measured against the same cooperative GT: **A's gain from B**
+(fused vs A-alone; `b_unique_tp` = GT only B saw) and **B's gain from A** (fused vs
+B-alone; `a_unique_tp` = GT only A saw).
 
-Fusion roughly **2.5× Vehicle-A-alone recall** (SGBM 0.21 → 0.54), recovering
-**23** objects (SGBM) that only Vehicle B could see — the core V2V benefit, end to
-end.
+### Headline — recall per set
+| Method | Recall A-alone | Recall B-alone | **Recall Fused** | Mean infer (s/frame) |
+|--------|:--------------:|:--------------:|:----------------:|:--------------------:|
+| **SGBM** | 0.2118 | 0.3765 | **0.5412** | 6.79 |
+| WAFT | 0.0824 | 0.2941 | **0.3765** | 160.4 |
+
+The fused set is shared, so `Recall Fused` is the common target both agents reach.
+B-alone already out-recalls A-alone (Vehicle B sees more of this intersection), so
+A gains more from cooperation than B does — but **both gain**.
+
+### Symmetric V2V gains — both agents benefit
+| Perspective | Baseline | Δ recall | Δ precision | Δ loc-err (m) ↓ | Unique TPs recovered |
+|-------------|----------|:--------:|:-----------:|:---------------:|:--------------------:|
+| **SGBM — A gains from B** | A-alone | **+0.3294** | +0.0766 | +0.0212 | **23** (`b_unique_tp`) |
+| **SGBM — B gains from A** | B-alone | **+0.1647** | −0.1254 | −0.0098 | _pending re-run_ (`a_unique_tp`) |
+| **WAFT — A gains from B** | A-alone | **+0.2941** | +0.0830 | +0.2941 | 15 (`b_unique_tp`) |
+| **WAFT — B gains from A** | B-alone | **+0.0824** | −0.1040 | −0.0830 | _pending re-run_ (`a_unique_tp`) |
+
+Δ recall / Δ precision = fused minus that agent's single-agent baseline; Δ loc-err
+= baseline loc-err minus fused (positive = fusion tightens localization). Both
+agents gain recall; each pays a precision cost (the other agent's false positives
+enter the fused set). `a_unique_tp` (GT only A saw, recovered for B) requires
+re-running `validate_stage4_fusion.py` — the symmetric counterpart to `b_unique_tp`
+is now computed by the validator but was not captured in the 2026-06-10 run.
 
 ### Full per-method breakdown (TP / FP / FN · precision · BEV loc-err)
 | Method | Set | TP | FP | FN | Precision | Loc-err (m) ↓ |
@@ -191,10 +211,14 @@ end.
 | WAFT | B-alone | 25 | 79 | 60 | 0.240 | 1.378 |
 | WAFT | **Fused** | 32 | 204 | 53 | 0.136 | 1.461 |
 
-- `recall_improvement` = +0.3294 (SGBM) / +0.2941 (WAFT); `precision_change` =
-  +0.0766 / +0.0830; `loc_error_improvement` = +0.0212 m / +0.2941 m.
-- Fusion improves recall **and** precision over A-alone for both methods, with no
-  localization penalty (loc-err essentially flat / improved).
+- A's gain: `recall_improvement_a` = +0.3294 (SGBM) / +0.2941 (WAFT);
+  `precision_change_a` = +0.0766 / +0.0830; `loc_error_improvement_a` =
+  +0.0212 m / +0.2941 m.
+- B's gain: `recall_improvement_b` = +0.1647 (SGBM) / +0.0824 (WAFT);
+  `precision_change_b` = −0.1254 / −0.1040; `loc_error_improvement_b` =
+  −0.0098 m / −0.0830 m.
+- Fusion improves recall for **both** agents; the precision dip is each agent
+  absorbing the other's false positives, and localization stays essentially flat.
 
 ### Per-class (Car · TP/FP/FN — fused)
 Coop-GT is vehicles only, so **Car** is the entire real signal. **Pedestrian** has

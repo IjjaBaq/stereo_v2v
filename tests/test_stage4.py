@@ -13,6 +13,11 @@ import numpy as np
 import pytest
 import yaml
 
+from stages.validate_stage4_fusion import (
+    build_coop_gt,
+    score_against_gt,
+    unique_tp,
+)
 from utils.fusion import (
     bev_distance,
     fuse,
@@ -266,3 +271,78 @@ class TestFull3dBoxes:
         for o in out:
             for k in _OPT_KEYS:
                 assert k in o, f"unmatched box missing '{k}'"
+
+
+# ---------------------------------------------------------------------------
+# Symmetric V2V cooperation metrics (validate_stage4_fusion)
+# ---------------------------------------------------------------------------
+
+def _gtbox(actor_id, x=0.0, z=10.0, label="Car"):
+    """GT box carrying actor_id, as load_carla_pair emits (confidence 1.0)."""
+    return {"label": label, "x": x, "y": 1.0, "z": z, "confidence": 1.0,
+            "actor_id": actor_id}
+
+
+class TestCoopGtTagging:
+    """build_coop_gt: union in A's frame, dedup by actor_id, seen_by tags."""
+
+    def test_seen_by_tags_and_dedup(self):
+        # actor 1 shared; actor 2 only A; actor 3 only B. T = identity.
+        boxes_a = [_gtbox(1, x=0, z=10), _gtbox(2, x=5, z=10)]
+        boxes_b = [_gtbox(1, x=0, z=10), _gtbox(3, x=-5, z=12)]
+        coop = build_coop_gt(boxes_a, boxes_b, np.eye(4))
+
+        seen = {g["actor_id"]: g["seen_by"] for g in coop}
+        assert len(coop) == 3            # shared actor 1 deduplicated
+        assert seen == {1: "both", 2: "A", 3: "B"}
+
+
+class TestUniqueTp:
+    """unique_tp is the symmetric V2V-gain primitive (a_unique vs b_unique)."""
+
+    def test_symmetric_counts(self):
+        coop = [
+            {"actor_id": 1, "seen_by": "both"},
+            {"actor_id": 2, "seen_by": "A"},     # only A saw it
+            {"actor_id": 3, "seen_by": "B"},     # only B saw it
+        ]
+        fused_keys = {1, 2, 3}
+        a_alone_keys = {1, 2}                     # A missed the B-only car
+        b_alone_keys = {1, 3}                     # B missed the A-only car
+
+        # A's gain from B: recovered actor 3 (only B saw, A-alone missed).
+        assert unique_tp(coop, fused_keys, a_alone_keys, "B") == 1
+        # B's gain from A: recovered actor 2 (only A saw, B-alone missed).
+        assert unique_tp(coop, fused_keys, b_alone_keys, "A") == 1
+
+    def test_no_gain_when_other_already_saw_it(self):
+        # actor 3 (B-only GT) was somehow already matched by A-alone → no gain.
+        coop = [{"actor_id": 3, "seen_by": "B"}]
+        assert unique_tp(coop, {3}, {3}, "B") == 0
+
+    def test_no_gain_when_fusion_misses_it(self):
+        coop = [{"actor_id": 3, "seen_by": "B"}]
+        assert unique_tp(coop, set(), set(), "B") == 0
+
+
+class TestSymmetricScoringIntegration:
+    """End-to-end: build_coop_gt → score_against_gt → symmetric unique_tp."""
+
+    def test_both_agents_gain(self, cfg):
+        max_dist = cfg["matching"]["max_dist"]
+        boxes_a = [_gtbox(1, x=0, z=10), _gtbox(2, x=5, z=10)]
+        boxes_b = [_gtbox(1, x=0, z=10), _gtbox(3, x=-5, z=12)]
+        coop = build_coop_gt(boxes_a, boxes_b, np.eye(4))
+
+        # Each agent alone detects only its own visible cars; fusion sees all.
+        a_pred = [_gtbox(1, x=0, z=10), _gtbox(2, x=5, z=10)]
+        b_pred = [_gtbox(1, x=0, z=10), _gtbox(3, x=-5, z=12)]
+        fused_pred = [_gtbox(1, x=0, z=10), _gtbox(2, x=5, z=10),
+                      _gtbox(3, x=-5, z=12)]
+
+        a_keys = score_against_gt(a_pred, coop, max_dist)["matched_gt_keys"]
+        b_keys = score_against_gt(b_pred, coop, max_dist)["matched_gt_keys"]
+        f_keys = score_against_gt(fused_pred, coop, max_dist)["matched_gt_keys"]
+
+        assert unique_tp(coop, f_keys, a_keys, "B") == 1   # A gained from B
+        assert unique_tp(coop, f_keys, b_keys, "A") == 1   # B gained from A

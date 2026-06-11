@@ -37,7 +37,7 @@ np.random.seed(42)
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 
-KITTI_CLASSES = ("Car", "Pedestrian")
+KITTI_CLASSES = ("Car",)   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 
 # ---------------------------------------------------------------------------

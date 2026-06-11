@@ -17,6 +17,18 @@
 - Tests in `tests/`, one file per stage, pytest
 - Shared config loading: `utils.config.load_configs` (do not re-copy per stage)
 
+## Class scope (Car-only, 2026-06-10)
+- The pipeline detects/evaluates **Car only**. Pedestrian was dropped everywhere:
+  no `person → Pedestrian` in stage2.yaml; no `Pedestrian` threshold in
+  stage3/stage4 `matching.max_dist`; `KITTI_CLASSES = ("Car",)` in all stages and
+  validators. Rationale: CARLA GT is all `Car`, and stereo pedestrian
+  detection/lifting was unreliable. COCO `truck`/`bus` still map to `Car`.
+- Exception: `utils/kitti_tracking_loader.KITTI_CLASSES = ("Car","Van","Truck")`
+  keeps car-like KITTI GT available (Van/Truck are still filtered out by the
+  Car-only Stage-3 validator unless explicitly remapped). To re-enable
+  Pedestrian, restore the stage2 mapping + stage3/stage4 thresholds + the
+  KITTI_CLASSES constants.
+
 ## Data Sources (two)
 - **KITTI** → real-image stereo for Stages 1-3 (depth → detect → lift). Only
   non-synthetic camera data. Stage 3 lifts each 2D detection to a 3D position
@@ -25,7 +37,10 @@
 - **CARLA** → full pipeline incl. Stage 4 V2V fusion (true simultaneous
   multi-agent; can also produce stereo for Stages 1-3). Data is wired in at
   `data/carla` (Town10HD intersection, 300 frames, two moving ego vehicles);
-  the CARLA loader (`utils/carla_loader.py`) is fully implemented.
+  the CARLA loader (`utils/carla_loader.py`) is fully implemented. Per-agent GT
+  is filtered by **true visibility**: a car counts as seen by an agent only if
+  `gt_boxes` `metrics_metadata.visible_pixels_v{A,B}` >= `carla.min_visible_pixels`
+  (stage4.yaml, default 10) — occlusion-truthful, not a geometric FOV guess.
 
 ## KITTI Conventions
 - Calib keys: P2, P3, R_rect_00, Tr_velo_to_cam
@@ -68,5 +83,9 @@
 - Stage 4 is wired and validated on CARLA (`data/carla`): `carla_loader.py`,
   `stage4_fusion.py` (detector path), and `validate_stage4_fusion.py` all run
   end-to-end; the fusion core (`utils/fusion.py`) is complete and unit-tested.
-  Latest SGBM run (20 frames) shows fusion recall 0.21→0.54 (+0.33), 23 B-unique
-  TPs — see VALIDATION_SUMMARY.md.
+  The validator scores cooperation **symmetrically** — both agents gain:
+  `recall_improvement_a`/`b_unique_tp` (A's gain from B) and
+  `recall_improvement_b`/`a_unique_tp` (B's gain from A). Latest SGBM run (20
+  frames) shows A recall 0.21→0.54 (+0.33, 23 B-unique TPs) and B recall
+  0.38→0.54 (+0.16). `a_unique_tp` is newly added and needs a re-run to populate
+  (the 2026-06-10 JSON predates it) — see VALIDATION_SUMMARY.md.

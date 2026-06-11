@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 random.seed(42)
 np.random.seed(42)
 
-KITTI_CLASSES = ("Car", "Pedestrian")
+KITTI_CLASSES = ("Car",)   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 # Per-method depth-sampling parameters (depth_sampling, crop_top_frac,
 # min_depth_m) now live in config/stage3.yaml under `per_method_overrides` and

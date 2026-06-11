@@ -9,7 +9,6 @@ output_dir: ./outputs/fusion
 # --- CARLA backend ---
 # Real simultaneous V2V: the two agents are genuine different viewpoints at one
 # timestamp, so dynamic objects fuse correctly too (no temporal caveat).
-# NOTE: utils/carla_loader.py is a stub until a CARLA export is wired in.
 carla:
   root: ./data/carla           # dataset root (scenario folders live under here)
   split: test                  # which split's scenarios to read
@@ -17,14 +16,18 @@ carla:
   agent_b: null                # Vehicle B agent ID; null = second agent in scene
   use_gt_boxes: true           # true = fuse GT boxes (baseline / smoke test);
                                # false = per-agent detector (run Stages 1-3)
+  min_visible_pixels: 10       # a GT car counts toward an agent's truth only if
+                               # >= this many of its pixels are actually visible
+                               # to that agent (gt_boxes metrics_metadata
+                               # visible_pixels_vA/vB) — drops occluded / out-of-
+                               # frame cars that geometry alone would keep.
 
 matching:
   # Greedy match across A and registered-B by BEV (x-z) centre distance,
   # same class. A pair matches if distance <= the per-class threshold.
   metric: center_dist
   max_dist:
-    Car: 2.0
-    Pedestrian: 1.0
+    Car: 2.0   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 static_filter:
   # A matched pair is fused if its BEV centre displacement AFTER registration

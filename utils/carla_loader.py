@@ -13,7 +13,14 @@ vehicles + ambient NPC traffic). The on-disk layout is::
     ├── vehicle_b/        — same layout
     └── gt_boxes/
         └── {frame:06d}.json  — every vehicle's GT box in CARLA world coords
-                                 (label, actor_id, x, y, z, l, w, h, yaw)
+                                 (label, actor_id, x, y, z, l, w, h, yaw, plus
+                                 metrics_metadata.visible_pixels_vA/vB — the
+                                 per-agent count of actually-visible pixels)
+
+Per-agent GT is filtered by true visibility: a car counts as seen by an agent
+only if ``metrics_metadata.visible_pixels_v{A,B}`` >= ``min_visible_pixels``.
+This is occlusion-truthful (occluded / off-screen cars render 0 pixels), unlike
+the geometric centre test kept only as a legacy fallback.
 
 What the pipeline needs from a CARLA export
 -------------------------------------------
@@ -80,13 +87,18 @@ LIDAR_TO_CAM = np.array(
     dtype=np.float64,
 )
 
-# A GT box whose world centre is within this radius of an agent's own world
-# pose is that agent's own vehicle — excluded from its detections.
+# A GT car counts toward an agent's truth only if at least this many of its
+# pixels are actually visible to that agent (gt_boxes ``metrics_metadata``
+# visible_pixels_vA/vB). Overridable via stage4.yaml ``carla.min_visible_pixels``.
+# This is occlusion-truthful: occluded / out-of-frame cars render 0 pixels and
+# the agent's own ego renders ~0 to its own camera, so both drop out naturally.
+_DEFAULT_MIN_VISIBLE_PIXELS = 10
+# Fallback only — geometric range/FOV gate used when a frame's gt_boxes carry no
+# ``metrics_metadata`` (legacy export). A vehicle is "seen" if it is in front
+# (z > _MIN_DEPTH_M), within _DEFAULT_MAX_RANGE_M, and its projected centre lands
+# inside the image. A box within _SELF_EXCLUDE_M of the agent pose is the ego.
 _SELF_EXCLUDE_M = 2.0
-# Camera-frame FOV gate: a vehicle is "seen" if it is in front (z > this) and
-# its projected centre lands inside the image.
 _MIN_DEPTH_M = 0.5
-# Default range gate (overridable via the stage4.yaml ``carla.max_range_m``).
 _DEFAULT_MAX_RANGE_M = 80.0
 
 
@@ -354,21 +366,84 @@ def project_box_to_2d(
 
 
 # ---------------------------------------------------------------------------
-# Per-agent GT detections (FOV-filtered world boxes in camera frame)
+# Per-agent GT detections (visibility-filtered world boxes in camera frame)
 # ---------------------------------------------------------------------------
+
+def _visibility_key(agent: str) -> str:
+    """Map an agent directory name to its gt_boxes visibility metadata key.
+
+    The export records per-vehicle visible-pixel counts keyed by agent role:
+    ``visible_pixels_vA`` for ``vehicle_a``, ``visible_pixels_vB`` for
+    ``vehicle_b`` (the suffix after the last underscore, upper-cased).
+
+    Args:
+        agent: Agent directory name (e.g. 'vehicle_a').
+
+    Returns:
+        The metadata key (e.g. 'visible_pixels_vA').
+    """
+    return f"visible_pixels_v{agent.split('_')[-1].upper()}"
+
 
 def _agent_gt_boxes(
     gt_world: list[dict],
     pose: dict,
     calib: dict,
+    agent: str,
+    min_visible_pixels: int = _DEFAULT_MIN_VISIBLE_PIXELS,
+) -> list[dict]:
+    """Build one agent's GT detections: world cars actually visible to it.
+
+    Truthful visibility: a car is kept only if at least ``min_visible_pixels`` of
+    its pixels are visible to this agent (``metrics_metadata`` visible_pixels_vA/
+    vB in gt_boxes). This naturally excludes occluded cars, cars outside the
+    image, and the agent's own ego (which renders ~0 pixels to its own camera) —
+    none of which the geometric centre test could reject.
+
+    Legacy fallback: if the frame's boxes carry no ``metrics_metadata`` at all,
+    fall back to the geometric FOV/range filter (``_agent_gt_boxes_geometric``).
+
+    Args:
+        gt_world: All vehicles' world-frame GT boxes at this frame.
+        pose: Observing agent's world pose.
+        calib: Observing agent's calibration (needs P2, image_w, image_h).
+        agent: Observing agent's directory name (selects the visibility key).
+        min_visible_pixels: Minimum visible pixels for a car to count as seen.
+
+    Returns:
+        List of camera-frame box dicts (carry ``visible_pixels``).
+    """
+    has_meta = any("metrics_metadata" in b for b in gt_world)
+    if not has_meta:
+        logger.warning(
+            "gt_boxes carry no metrics_metadata — falling back to the geometric "
+            "visibility filter (occluded cars may be over-counted)."
+        )
+        return _agent_gt_boxes_geometric(gt_world, pose, calib, _DEFAULT_MAX_RANGE_M)
+
+    key = _visibility_key(agent)
+    boxes: list[dict] = []
+    for b in gt_world:
+        vis = int(b.get("metrics_metadata", {}).get(key, 0))
+        if vis < min_visible_pixels:
+            continue
+        cam = _world_box_to_camera(b, pose)
+        cam["visible_pixels"] = vis
+        boxes.append(cam)
+    return boxes
+
+
+def _agent_gt_boxes_geometric(
+    gt_world: list[dict],
+    pose: dict,
+    calib: dict,
     max_range_m: float,
 ) -> list[dict]:
-    """Build one agent's GT detections: world boxes seen from its camera.
+    """Legacy geometric visibility filter (no occlusion handling).
 
-    Excludes the agent's own vehicle (nearest world box within
-    ``_SELF_EXCLUDE_M``) and keeps only vehicles in front of and inside the
-    camera FOV, within ``max_range_m``. gt_boxes carries no occlusion info, so
-    this is a geometric visibility approximation.
+    Used only as a fallback when gt_boxes lack ``metrics_metadata``. Excludes the
+    agent's own vehicle (nearest world box within ``_SELF_EXCLUDE_M``) and keeps
+    vehicles in front of and inside the camera FOV within ``max_range_m``.
 
     Args:
         gt_world: All vehicles' world-frame GT boxes at this frame.
@@ -489,6 +564,7 @@ def load_carla_pair(
     agent_a: str | None = None,
     agent_b: str | None = None,
     use_gt_boxes: bool = True,
+    min_visible_pixels: int = _DEFAULT_MIN_VISIBLE_PIXELS,
 ) -> tuple[list[dict], list[dict], np.ndarray, str]:
     """Load one CARLA agent pair at a timestamp for Stage 4 fusion.
 
@@ -499,6 +575,8 @@ def load_carla_pair(
         agent_b: Vehicle B agent ID. None → second agent in the scenario.
         use_gt_boxes: True → fuse ground-truth boxes (baseline / smoke test);
             False → per-agent detector boxes (run Stages 1-3 per agent).
+        min_visible_pixels: Minimum visible pixels for a GT car to count as seen
+            by an agent (per-agent visibility filter).
 
     Returns:
         (boxes_a, boxes_b, T_b_to_a, scene_id) — boxes in each agent's KITTI
@@ -527,10 +605,9 @@ def load_carla_pair(
 
     calib_a = load_carla_calib(scenario_dir, agent_a)
     calib_b = load_carla_calib(scenario_dir, agent_b)
-    max_range = float(_DEFAULT_MAX_RANGE_M)
 
-    boxes_a = _agent_gt_boxes(gt_world, pose_a, calib_a, max_range)
-    boxes_b = _agent_gt_boxes(gt_world, pose_b, calib_b, max_range)
+    boxes_a = _agent_gt_boxes(gt_world, pose_a, calib_a, agent_a, min_visible_pixels)
+    boxes_b = _agent_gt_boxes(gt_world, pose_b, calib_b, agent_b, min_visible_pixels)
     T_b_to_a = _inter_agent_transform(pose_a, pose_b)
 
     _sanity_check_shared_vehicles(boxes_a, boxes_b, T_b_to_a)
@@ -612,19 +689,60 @@ def load_carla_image(
     return img
 
 
-def load_carla_frame(scenario_dir: str, agent: str, timestamp: str) -> dict:
+def load_carla_disparity_gt(
+    scenario_dir: str,
+    agent: str,
+    timestamp: str,
+) -> np.ndarray:
+    """Load one CARLA agent's ground-truth disparity map.
+
+    The export stores GT disparity as a float32 ``.npy`` under the agent's
+    ``disp_noc_0/`` directory (mirroring KITTI's ``disp_noc_0`` naming). Pixels
+    with value <= 0 are invalid (sky / out of range) and are returned as np.nan,
+    matching the invalid-pixel contract of
+    ``utils.kitti_loader.load_disparity_gt`` so the Stage-1 metrics work unchanged.
+
+    Args:
+        scenario_dir: Path to one CARLA scenario folder.
+        agent: Agent directory name (e.g. 'vehicle_a').
+        timestamp: Timestamp string identifying the frame.
+
+    Returns:
+        Disparity map, shape (H, W), float32. Invalid pixels = np.nan.
+
+    Raises:
+        FileNotFoundError: If the disparity .npy is missing.
+    """
+    ts = _normalize_ts(timestamp)
+    path = Path(scenario_dir) / agent / "disp_noc_0" / f"{ts}_disp.npy"
+    if not path.exists():
+        raise FileNotFoundError(f"CARLA disparity GT not found: {path}")
+
+    raw = np.load(str(path)).astype(np.float32)
+    disp = raw.copy()
+    disp[raw <= 0] = np.nan
+    return disp
+
+
+def load_carla_frame(
+    scenario_dir: str,
+    agent: str,
+    timestamp: str,
+    min_visible_pixels: int = _DEFAULT_MIN_VISIBLE_PIXELS,
+) -> dict:
     """Load all data for a single CARLA agent frame in one call.
 
     Mirrors ``utils.kitti_tracking_loader.load_tracking_frame``: returns the
     left/right stereo images, calib, and the agent's GT labels (every other
-    vehicle's GT box expressed in this agent's camera frame, FOV-filtered) for
-    Stage 3 validation. Labels carry ``rotation_y`` (= camera heading) so they
+    vehicle's GT box expressed in this agent's camera frame, visibility-filtered)
+    for Stage 3 validation. Labels carry ``rotation_y`` (= camera heading) so they
     match the KITTI label schema; matching is by 3D centre distance.
 
     Args:
         scenario_dir: Path to one CARLA scenario folder.
         agent: Agent directory name.
         timestamp: Timestamp string identifying the frame.
+        min_visible_pixels: Minimum visible pixels for a GT car to count as seen.
 
     Returns:
         Dict with agent, frame_id, left, right, calib, labels.
@@ -634,7 +752,7 @@ def load_carla_frame(scenario_dir: str, agent: str, timestamp: str) -> dict:
     pose = _read_pose(Path(scenario_dir), agent, ts)
     gt_world = _read_gt_world(Path(scenario_dir), ts)
 
-    boxes = _agent_gt_boxes(gt_world, pose, calib, _DEFAULT_MAX_RANGE_M)
+    boxes = _agent_gt_boxes(gt_world, pose, calib, agent, min_visible_pixels)
     labels = [
         {
             "label":      b["label"],

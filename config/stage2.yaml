@@ -22,9 +22,11 @@ model:
 
 class_mapping:
   car:        Car
-  person:     Pedestrian
+  # Pedestrian dropped (2026-06-10): Car-only pipeline. CARLA GT is all 'Car',
+  # and stereo pedestrian detection/lifting was unreliable. To re-enable, add
+  # `person: Pedestrian` here and the Pedestrian thresholds in stage3/stage4.
   # bicycle and motorcycle removed — mapped to Cyclist but causes too many
-  # false positives from parked bikes. Re-enable after fine-tuning on KITTI. in case back add in stage 3 yaml
+  # false positives from parked bikes. Re-enable after fine-tuning on KITTI.
   # bicycle:    Cyclist
   # motorcycle: Cyclist
   truck:      Car

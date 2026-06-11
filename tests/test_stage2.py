@@ -1,12 +1,12 @@
 """Smoke tests for Stage 2 — 2D Object Detection.
 
-Tests RT-DETR detection pipeline on sample "000000".
+Tests RT-DETR detection pipeline on sample "000001".
 Model is loaded once per session and reused across all tests.
 
 Run with: pytest tests/test_stage2.py -v
 
 Requires:
-    - KITTI training data at ./data/kitti/training/image_2/000000.png
+    - KITTI training data at ./data/kitti/training/image_2/000001.png
     - config/base.yaml and config/stage2.yaml present
     - Model weights in ./models/ (downloaded on first run)
 """
@@ -34,9 +34,9 @@ from utils.kitti_loader import load_image, load_labels
 
 BASE_CONFIG  = "config/base.yaml"
 STAGE_CONFIG = "config/stage2.yaml"
-SAMPLE_ID    = "000000"
+SAMPLE_ID    = "000001"   # car-bearing scene (000000 is pedestrian-only)
 OUTPUT_DIR   = Path("outputs/detections")
-KITTI_CLASSES = {"Car", "Pedestrian", "Cyclist"}
+KITTI_CLASSES = {"Car"}   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures — model loaded once for entire test run
@@ -209,9 +209,9 @@ class TestDetections:
             assert box["y2"] > box["y1"], f"y2 <= y1: {box}"
 
     def test_at_least_one_detection_on_kitti_scene(self, detections):
-        # Sample 000000 has cars visible — if zero detections something is wrong
+        # Sample 000001 has cars visible — if zero detections something is wrong
         assert len(detections) > 0, (
-            "No detections on sample 000000. "
+            "No detections on sample 000001. "
             "Check model loading or confidence threshold."
         )
 

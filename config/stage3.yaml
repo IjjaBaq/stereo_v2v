@@ -43,8 +43,7 @@ per_method_overrides:
 # within max_dist metres. Same convention as config/stage4.yaml.
 matching:
   max_dist:
-    Car: 2.0
-    Pedestrian: 1.0
+    Car: 2.0   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 
 

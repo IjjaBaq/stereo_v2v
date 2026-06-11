@@ -26,6 +26,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import random
 import sys
 import time
@@ -59,7 +60,7 @@ def detect_agent_boxes(
     method: str,
     processor,
     model,
-) -> tuple[list[dict], float]:
+) -> tuple[list[dict], float, dict | None]:
     """Run Stages 1-3 on one CARLA agent's stereo frame.
 
     Stereo depth (Stage 1) → 2D detection (Stage 2) → lift to 3D positions
@@ -68,6 +69,10 @@ def detect_agent_boxes(
     box). Per-method Stage-3 sampling params come from config via
     ``stage3_lift.apply_method_overrides``. Stage outputs are written under
     ``outputs/<stage>/carla/...`` so nothing lands in the KITTI dirs.
+
+    When the agent has a ground-truth disparity map on disk, a Stage-1 depth
+    validation figure (input | predicted | GT, same layout KITTI uses) is written
+    beside the disparity and its EPE/D1/coverage are returned for MLflow logging.
 
     Args:
         scenario_dir: Path to one CARLA scenario folder.
@@ -82,19 +87,27 @@ def detect_agent_boxes(
         model: Pre-loaded RT-DETR model (Stage 2).
 
     Returns:
-        (positions, infer_seconds) — the Stage-3 3D positions and the
-        wall-clock inference time in seconds (model load excluded).
+        (positions, infer_seconds, depth_eval) — the Stage-3 3D positions, the
+        wall-clock inference time in seconds (model load excluded), and the
+        Stage-1 depth metrics dict (epe, d1, coverage, ...) or None if the agent
+        has no GT disparity for this frame.
     """
     import cv2
 
     from stages.stage1_depth import run as run_stage1
     from stages.stage2_detect import run as run_stage2
     from stages.stage3_lift import apply_method_overrides, run as run_stage3
-    from utils.carla_loader import load_carla_frame, project_box_to_2d
-    from utils.visualization import make_detection_visualization
+    from utils.carla_loader import (
+        load_carla_disparity_gt,
+        load_carla_frame,
+        project_box_to_2d,
+    )
+    from utils.depth_metrics import evaluate
+    from utils.visualization import make_detection_visualization, make_side_by_side
 
     frame = load_carla_frame(scenario_dir, agent, timestamp)
     sample_id = f"{agent}_{frame['frame_id']}"
+    depth_dir = f"outputs/depth/carla/{method}/{agent}"
 
     t0 = time.perf_counter()
 
@@ -106,8 +119,35 @@ def detect_agent_boxes(
         image_left=frame["left"],
         image_right=frame["right"],
         calib=frame["calib"],
-        output_dir_override=f"outputs/depth/carla/{method}/{agent}",
+        output_dir_override=depth_dir,
     )
+
+    # Stage-1 depth validation figure (input | predicted | GT), same layout as
+    # the KITTI Stage-1 validator. Skipped if this agent has no GT disparity for
+    # the frame, so fusion never breaks on a missing/legacy export.
+    depth_eval: dict | None = None
+    try:
+        gt_disp = load_carla_disparity_gt(scenario_dir, agent, frame["frame_id"])
+    except FileNotFoundError as e:
+        logger.warning("No GT disparity for %s — skipping depth viz (%s).",
+                       sample_id, e)
+    else:
+        if gt_disp.shape != s1["disp"].shape:
+            logger.warning(
+                "Disparity shape mismatch for %s: pred=%s gt=%s — skipping "
+                "depth viz.", sample_id, s1["disp"].shape, gt_disp.shape,
+            )
+        else:
+            depth_eval = evaluate(s1["disp"], gt_disp)
+            val_vis = make_side_by_side(
+                frame["left"], s1["disp"], gt_disp,
+                f"{agent} {frame['frame_id']}",
+                epe=depth_eval["epe"], d1=depth_eval["d1"], method=method,
+            )
+            val_png = Path(depth_dir) / f"{frame['frame_id']}_val.png"
+            val_png.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(val_png), val_vis)
+            logger.info("Saved depth validation visualization → %s", val_png)
 
     s2 = run_stage2(
         sample_id=sample_id,
@@ -146,7 +186,7 @@ def detect_agent_boxes(
     )
 
     infer_s = time.perf_counter() - t0
-    return s3["positions"], infer_s
+    return s3["positions"], infer_s, depth_eval
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +311,7 @@ def run_carla(
     use_gt  = bool(carla_cfg.get("use_gt_boxes", True))
 
     infer_s: float | None = None
+    depth_eval: dict = {}
     if use_gt:
         boxes_a, boxes_b, T_b_to_a, scene_id = load_carla_pair(
             scenario_dir, timestamp,
@@ -286,15 +327,19 @@ def run_carla(
         T_b_to_a, agent_a, agent_b, scene_id = load_carla_transform(
             scenario_dir, timestamp, agent_a=agent_a, agent_b=agent_b,
         )
-        boxes_a, t_a = detect_agent_boxes(
+        boxes_a, t_a, depth_a = detect_agent_boxes(
             scenario_dir, agent_a, timestamp, base_cfg,
             stage1_cfg, stage2_cfg, stage3_cfg, method, processor, model,
         )
-        boxes_b, t_b = detect_agent_boxes(
+        boxes_b, t_b, depth_b = detect_agent_boxes(
             scenario_dir, agent_b, timestamp, base_cfg,
             stage1_cfg, stage2_cfg, stage3_cfg, method, processor, model,
         )
         infer_s = t_a + t_b
+        depth_eval = {
+            a: m for a, m in ((agent_a, depth_a), (agent_b, depth_b))
+            if m is not None
+        }
 
     output_dir = (
         Path(output_dir_override)
@@ -314,11 +359,15 @@ def run_carla(
     if infer_s is not None:
         meta["method_depth"]     = method
         meta["inference_time_s"] = round(infer_s, 3)
+    if depth_eval:
+        meta["depth_eval"] = depth_eval
 
     result = fuse_and_write(boxes_a, boxes_b, T_b_to_a, scene_id, meta,
                             output_dir, stage_cfg)
     if infer_s is not None:
         result["inference_time_s"] = round(infer_s, 3)
+    if depth_eval:
+        result["depth_eval"] = depth_eval
     return result
 
 
@@ -398,5 +447,14 @@ if __name__ == "__main__":
         mlflow.log_metric("n_output_boxes", len(result["boxes"]))
         if "inference_time_s" in result:
             mlflow.log_metric("inference_time_s", result["inference_time_s"])
+
+        # Stage-1 depth quality per agent (detector path, when GT disparity
+        # exists). Skips NaN metrics (no mutually valid pixels) — MLflow rejects
+        # them. Agent suffix keeps the two vehicles' metrics distinct.
+        for agent, m in result.get("depth_eval", {}).items():
+            for key in ("epe", "d1", "coverage"):
+                val = m.get(key)
+                if val is not None and not math.isnan(val):
+                    mlflow.log_metric(f"depth_{key}_{agent}", val)
 
     logger.info("Stage 4 complete — MLflow run logged.")

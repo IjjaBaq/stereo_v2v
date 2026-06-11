@@ -98,20 +98,33 @@ range. Beyond ~30 m, depth error is governed by the depth **map** at range
 Each frame scores three prediction sets — **A-alone**, **B-alone** (registered
 into A's frame), **Fused** — against a *cooperative* GT (every vehicle visible to
 A *or* B, deduped by `actor_id`; all 85 coop-GT objects across the 20 frames are
-Cars). Matching is greedy BEV centre distance per class.
+Cars). Matching is greedy BEV centre distance per class. The fused output is
+**shared**, so the evaluation is **symmetric** — both agents' gains are reported.
 
 | Metric | A-alone | B-alone | **Fused** |
 |---|---|---|---|
-| Recall — SGBM | 0.21 | 0.38 | **0.54** (+0.33) |
-| Recall — WAFT | 0.08 | 0.29 | **0.38** (+0.29) |
+| Recall — SGBM | 0.21 | 0.38 | **0.54** |
+| Recall — WAFT | 0.08 | 0.29 | **0.38** |
 | Precision — SGBM | 0.15 | 0.35 | 0.23 |
 | Precision — WAFT | 0.05 | 0.24 | 0.14 |
 | Loc-err (m) — SGBM | 1.33 | 1.29 | 1.31 |
 | Loc-err (m) — WAFT | 1.75 | 1.38 | 1.46 |
 
-**B-unique TPs** (objects recovered only via Vehicle B): **23** (SGBM) / **15**
-(WAFT). This is the headline V2V result — **fusion ~2.5× A-alone recall (SGBM
-0.21→0.54) with no localization penalty**, recovering objects A could not see.
+**Symmetric gains** (fused vs each agent's own single-agent baseline):
+
+| Gain | SGBM | WAFT |
+|---|---|---|
+| **A gains from B** — Δrecall_a | **+0.33** | **+0.29** |
+| `b_unique_tp` (GT only B saw, recovered for A) | **23** | 15 |
+| **B gains from A** — Δrecall_b | **+0.16** | **+0.08** |
+| `a_unique_tp` (GT only A saw, recovered for B) | _pending re-run_ | _pending re-run_ |
+
+This is the headline V2V result — **both vehicles gain recall from cooperation**
+with no localization penalty. A gains most (**~2.5× A-alone recall, SGBM
+0.21→0.54**) because Vehicle B already sees more of this intersection; B still
+gains (+0.16 SGBM), recovering objects each agent alone could not see. `a_unique_tp`
+is the symmetric counterpart to `b_unique_tp`, now computed by the validator but
+not captured in the 2026-06-10 run (needs a re-run).
 
 - **SGBM beats WAFT here** (same Stage-3 pattern: WAFT skips nothing → more FPs;
   SGBM's sparsity filters weak detections) and is ~24× faster (6.8 vs 160 s/frame
@@ -170,9 +183,11 @@ corroborated pairs (noisy-OR confidence, confidence-weighted centre; size/headin
 merged only if present — the core handles both position-only and full-3D boxes).
 The CARLA backend (`run_carla`) is the data plumbing around it: it runs Stages
 1-3 per agent (`detect_agent_boxes`), registers B into A's frame, and fuses.
-- **Status:** ✅ Core implemented + unit-tested (26 tests) and now **validated
-  end-to-end on CARLA** (20 frames). Fusion lifts recall 0.21→0.54 (SGBM) over
-  Vehicle-A-alone, recovering 23 B-unique objects — see §2.
+- **Status:** ✅ Core implemented + unit-tested (31 tests) and now **validated
+  end-to-end on CARLA** (20 frames). The evaluation is **symmetric** — both agents'
+  gains are scored (`recall_improvement_a`/`b_unique_tp` for A, and
+  `recall_improvement_b`/`a_unique_tp` for B). Fusion lifts A's recall 0.21→0.54
+  (SGBM, +23 B-unique objects) and B's recall 0.38→0.54 — see §2.
 
 ---
 
@@ -205,7 +220,7 @@ The CARLA backend (`run_carla`) is the data plumbing around it: it runs Stages
 
 ## 5. Test health
 
-Full suite: **157 tests, all passing** (`stereo_v2v_env`):
+Full suite: **162 tests, all passing** (`stereo_v2v_env`):
 
 | File | Count |
 |---|---|
@@ -213,10 +228,11 @@ Full suite: **157 tests, all passing** (`stereo_v2v_env`):
 | `test_stage1.py` | 29 |
 | `test_stage2.py` | 33 |
 | `test_stage3.py` | 33 |
-| `test_stage4.py` | 26 |
+| `test_stage4.py` | 31 |
 
-Stage 4 includes coverage for **both** box schemas through the fusion core
-(position-only and full 3D).
+Stage 4 covers **both** box schemas through the fusion core (position-only and
+full 3D) and the **symmetric** cooperation metrics (`build_coop_gt`, `unique_tp`,
+`score_against_gt` — A's and B's gains computed the same way).
 
 ---
 
@@ -227,7 +243,7 @@ Stage 4 includes coverage for **both** box schemas through the fusion core
 | 1 Depth | ✅ working | WAFT accurate (EPE 0.89 px, 5 frames) and trusted; SGBM is the sparse baseline. |
 | 2 Detect | ✅ working | RT-DETR runs and maps to KITTI; mAP 0.930 over 10 frames. |
 | 3 Lift | ⚙️ code current, depth-sampling re-tuned | Emits 3D position + 2D box; percentiles tuned (SGBM p20, WAFT p35); end-to-end re-run pending. |
-| 4 Fusion | ✅ validated on CARLA | Fusion recall 0.21→0.54 (SGBM, 20 frames), +23 B-unique TPs, no loc penalty. |
+| 4 Fusion | ✅ validated on CARLA | Symmetric V2V gain: A recall 0.21→0.54 (+23 B-unique TPs), B recall 0.38→0.54 (SGBM, 20 frames), no loc penalty. |
 
 ### Takeaway
 > The full 4-stage pipeline now runs end-to-end and is unit-tested (157 tests
@@ -235,8 +251,9 @@ Stage 4 includes coverage for **both** box schemas through the fusion core
 > spot-check validation. Stage 3 produces honest stereo-recoverable output (3D
 > position + 2D box) at re-tuned per-method depth-sampling percentiles. **Stage 4
 > — the project goal — is now demonstrated on CARLA V2V data:** cooperative fusion
-> roughly 2.5× single-agent recall (SGBM 0.21→0.54 over 20 frames), recovering 23
-> objects only the second vehicle could see, with no localization penalty. The
+> helps **both** vehicles — A's recall ~2.5× (SGBM 0.21→0.54 over 20 frames,
+> recovering 23 objects only Vehicle B could see) and B's recall 0.38→0.54 — with
+> no localization penalty. The
 > remaining gaps are scale and precision — the demonstration is 20 close-range
 > frames with vehicle-only GT, so the next step is a larger, multi-class CARLA
 > evaluation and reining in detector false positives.

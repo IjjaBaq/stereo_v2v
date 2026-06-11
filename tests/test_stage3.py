@@ -38,7 +38,7 @@ BASE_CONFIG   = "config/base.yaml"
 STAGE_CONFIG  = "config/stage3.yaml"
 SAMPLE_ID     = "000000"
 OUTPUT_DIR    = Path("outputs/lift3d")
-KITTI_CLASSES = {"Car", "Pedestrian", "Cyclist"}
+KITTI_CLASSES = {"Car"}   # Car-only pipeline (Pedestrian dropped 2026-06-10)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ class TestConfig:
 
     def test_matching_max_dist_present(self, stage_cfg):
         max_dist = stage_cfg["matching"]["max_dist"]
-        for cls in ("Car", "Pedestrian"):
+        for cls in ("Car",):   # Car-only pipeline (Pedestrian dropped 2026-06-10)
             assert cls in max_dist, f"Missing max_dist for '{cls}'"
             assert max_dist[cls] > 0, f"max_dist[{cls}] must be positive"
 

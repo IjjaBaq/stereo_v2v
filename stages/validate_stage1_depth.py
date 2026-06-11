@@ -24,6 +24,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage1_depth import load_configs, load_waft_model, run as run_stage1
+from utils.depth_metrics import evaluate
 from utils.kitti_loader import load_disparity_gt, load_image
 from utils.validation_io import merge_samples
 from utils.visualization import make_side_by_side
@@ -32,84 +33,6 @@ logger = logging.getLogger(__name__)
 
 random.seed(42)
 np.random.seed(42)
-
-
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
-def compute_epe(pred: np.ndarray, gt: np.ndarray) -> float:
-    """Compute End-Point Error over mutually valid pixels.
-
-    Args:
-        pred: Predicted disparity, shape (H, W), float32.
-        gt:   GT disparity, shape (H, W), float32. np.nan = invalid.
-
-    Returns:
-        EPE in pixels, or nan if no valid pixels.
-    """
-    valid = ~np.isnan(gt) & ~np.isnan(pred)
-    if not valid.any():
-        return float("nan")
-    return float(np.mean(np.abs(pred[valid] - gt[valid])))
-
-
-def compute_d1(
-    pred: np.ndarray,
-    gt: np.ndarray,
-    threshold: float = 3.0,
-) -> float:
-    """Compute D1 — percentage of pixels with error above threshold.
-
-    Args:
-        pred: Predicted disparity, shape (H, W), float32.
-        gt:   GT disparity, shape (H, W), float32. np.nan = invalid.
-        threshold: Error threshold in pixels (default 3.0, KITTI convention).
-
-    Returns:
-        D1 percentage (0–100), or nan if no valid pixels.
-    """
-    valid = ~np.isnan(gt) & ~np.isnan(pred)
-    if not valid.any():
-        return float("nan")
-    errors = np.abs(pred[valid] - gt[valid])
-    return float(np.sum(errors > threshold) / valid.sum() * 100.0)
-
-
-def evaluate(pred: np.ndarray, gt: np.ndarray) -> dict:
-    """Run all metrics for one sample.
-
-    Args:
-        pred: Predicted disparity, shape (H, W), float32.
-        gt:   GT disparity, shape (H, W), float32.
-
-    Returns:
-        Dict with keys: epe, d1, coverage, valid_gt_px, evaluated_px.
-    """
-    valid    = ~np.isnan(gt) & ~np.isnan(pred)
-    gt_count = int((~np.isnan(gt)).sum())
-
-    if not valid.any():
-        return {
-            "epe": float("nan"), "d1": float("nan"),
-            "coverage": 0.0, "valid_gt_px": gt_count, "evaluated_px": 0,
-        }
-
-    epe      = compute_epe(pred, gt)
-    d1       = compute_d1(pred, gt)
-    coverage = float(valid.sum()) / gt_count * 100.0 if gt_count > 0 else 0.0
-
-    logger.info(
-        "Metrics — EPE=%.4fpx | D1=%.2f%% | coverage=%.1f%% | %d/%d GT px",
-        epe, d1, coverage, int(valid.sum()), gt_count,
-    )
-    return {
-        "epe":          epe,
-        "d1":           d1,
-        "coverage":     coverage,
-        "valid_gt_px":  gt_count,
-        "evaluated_px": int(valid.sum()),
-    }
 
 
 # ---------------------------------------------------------------------------

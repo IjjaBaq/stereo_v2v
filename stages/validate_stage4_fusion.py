@@ -11,7 +11,8 @@ all expressed in Vehicle A's camera frame, against a **cooperative ground truth*
 Cooperative GT = every vehicle visible to A *or* B, expressed in A's frame and
 deduplicated by ``actor_id`` (an A-visible instance wins — it carries no
 registration error). This is the truth fusion should recover; scoring against it
-lets ``recall_improvement`` and ``b_unique_tp`` credit objects only B could see.
+lets the symmetric gains (``recall_improvement_a`` / ``b_unique_tp`` and
+``recall_improvement_b`` / ``a_unique_tp``) credit objects only one agent saw.
 
 Matching is greedy BEV (x-z) centre distance within class, reusing the per-class
 ``matching.max_dist`` thresholds from config/stage4.yaml — the same criterion the
@@ -22,9 +23,19 @@ never routed through ``fuse`` (which strips ``actor_id``).
 Per run it writes ``outputs/fusion/carla/{method}/validation_results.json`` and
 logs to MLflow:
     - recall / precision / BEV localization-error per method.
-    - recall_improvement = recall_fused - recall_A_alone (headline V2V gain).
-    - b_unique_tp = GT recovered only via Vehicle B (outside / occluded for A).
-    - per-class (Car, Pedestrian) and GT-depth-range breakdowns.
+    - Symmetric V2V gains — cooperation is mutual, so both agents' gains are
+      measured against the same cooperative GT:
+        * A's gain from B: ``recall_improvement_a`` / ``precision_change_a`` /
+          ``loc_error_improvement_a`` (fused vs A-alone) and ``b_unique_tp`` =
+          GT only B saw that fusion recovers for A.
+        * B's gain from A: ``recall_improvement_b`` / ``precision_change_b`` /
+          ``loc_error_improvement_b`` (fused vs B-alone) and ``a_unique_tp`` =
+          GT only A saw that fusion recovers for B.
+      The fused output is shared, so ``recall_fused`` is common to both
+      perspectives; each agent's "alone" baseline is its own single-agent recall.
+      Both baselines are scored in A's frame against the same cooperative GT —
+      ``T_b_to_a`` is rigid, so this equals scoring B in its native frame.
+    - per-class (Car) and GT-depth-range breakdowns.
     - mean inference time per frame (model load excluded).
 
 Usage:
@@ -141,7 +152,7 @@ def score_against_gt(
     Greedy BEV matching within class (``utils.fusion.match_boxes``). Each TP
     carries the GT depth and BEV error so the run summary can pool by class and
     depth bin. ``matched_gt_keys`` records which GT (by actor_id) each method
-    recovered — used for ``b_unique_tp``.
+    recovered — used for the symmetric ``a_unique_tp`` / ``b_unique_tp``.
 
     Args:
         preds: Predicted boxes in A's frame (label, x, y, z, ...).
@@ -174,6 +185,36 @@ def score_against_gt(
         "fn_labels":       [coop_gt[gi]["label"] for gi in fn_idx],
         "matched_gt_keys": matched_gt_keys,
     }
+
+
+def unique_tp(
+    coop_gt: list[dict],
+    fused_keys: set,
+    other_alone_keys: set,
+    seen_tag: str,
+) -> int:
+    """Count GT only one agent saw that fusion recovered but the other missed.
+
+    The symmetric V2V-gain primitive: ``seen_tag="B"`` yields ``b_unique_tp``
+    (A's gain from B — GT only B saw, recovered by fusion, missed by A-alone);
+    ``seen_tag="A"`` yields ``a_unique_tp`` (B's gain from A).
+
+    Args:
+        coop_gt: Cooperative GT boxes (carry ``actor_id`` and ``seen_by``); GT
+            keys mirror ``score_against_gt`` (``actor_id`` or the list index).
+        fused_keys: GT keys the fused set matched.
+        other_alone_keys: GT keys the *other* agent alone matched.
+        seen_tag: "A" or "B" — the agent that uniquely saw the GT.
+
+    Returns:
+        Count of uniquely-seen GT recovered by fusion but missed by the other
+        agent alone.
+    """
+    only_keys = {
+        g.get("actor_id", i) for i, g in enumerate(coop_gt)
+        if g["seen_by"] == seen_tag
+    }
+    return len(only_keys & fused_keys - other_alone_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +258,11 @@ def validate_frame(
     T_b_to_a, agent_a, agent_b, scene_id = load_carla_transform(
         scenario_dir, timestamp, agent_a=agent_a, agent_b=agent_b,
     )
+    min_vis = int(stage4_cfg.get("carla", {}).get("min_visible_pixels", 10))
     boxes_a_gt, boxes_b_gt, _, _ = load_carla_pair(
         scenario_dir, timestamp,
         agent_a=agent_a, agent_b=agent_b, use_gt_boxes=True,
+        min_visible_pixels=min_vis,
     )
     coop_gt = build_coop_gt(boxes_a_gt, boxes_b_gt, T_b_to_a)
 
@@ -239,16 +282,12 @@ def validate_frame(
     scored = {m: score_against_gt(p, coop_gt, max_dist)
               for m, p in pred_sets.items()}
 
-    # b_unique_tp — GT visible only to B that fusion recovers but A-alone misses.
-    b_only_keys = {
-        g.get("actor_id", i) for i, g in enumerate(coop_gt)
-        if g["seen_by"] == "B"
-    }
-    b_unique_tp = len(
-        b_only_keys
-        & scored["fused"]["matched_gt_keys"]
-        - scored["a_alone"]["matched_gt_keys"]
-    )
+    # Symmetric cooperation gain — GT one agent uniquely saw that fusion recovers
+    # but the *other* agent alone missed. b_unique_tp = A's gain from B (GT only B
+    # saw); a_unique_tp = B's gain from A (GT only A saw).
+    fused_keys = scored["fused"]["matched_gt_keys"]
+    b_unique_tp = unique_tp(coop_gt, fused_keys, scored["a_alone"]["matched_gt_keys"], "B")
+    a_unique_tp = unique_tp(coop_gt, fused_keys, scored["b_alone"]["matched_gt_keys"], "A")
 
     # BEV figure: coop GT vs A-alone vs fused.
     fig_path = output_dir / f"{scene_id}_bev.png"
@@ -258,6 +297,7 @@ def validate_frame(
         "timestamp":   timestamp,
         "scene_id":    scene_id,
         "n_coop_gt":   len(coop_gt),
+        "a_unique_tp": a_unique_tp,
         "b_unique_tp": b_unique_tp,
         "inference_time_s": round(t_a + t_b, 3),
         "fuse_stats":  fuse_stats,
@@ -267,10 +307,11 @@ def validate_frame(
         },
     }
     logger.info(
-        "scene=%s coop_gt=%d | recall A=%.2f fused=%.2f (+%.2f) | b_unique_tp=%d",
+        "scene=%s coop_gt=%d | recall A=%.2f B=%.2f fused=%.2f | "
+        "a_unique_tp=%d b_unique_tp=%d",
         scene_id, len(coop_gt),
-        _recall(scored["a_alone"]), _recall(scored["fused"]),
-        _recall(scored["fused"]) - _recall(scored["a_alone"]), b_unique_tp,
+        _recall(scored["a_alone"]), _recall(scored["b_alone"]),
+        _recall(scored["fused"]), a_unique_tp, b_unique_tp,
     )
     return record
 
@@ -408,27 +449,37 @@ def _build_summary(
             if v is not None and not math.isnan(v):
                 mlflow.log_metric(f"{k}_{m}", v)
 
-    # Headline V2V gains (fused vs A-alone).
+    # Symmetric V2V gains — both agents benefit from cooperation. Suffix _a is
+    # A's gain from B (fused vs A-alone), _b is B's gain from A (fused vs
+    # B-alone); the fused output is shared, so recall_fused is common to both.
     def diff(metric, a, b):
         va, vb = per_method[a][metric], per_method[b][metric]
         if va is None or vb is None or math.isnan(va) or math.isnan(vb):
             return None
         return vb - va
 
-    summary["recall_improvement"]    = diff("recall", "a_alone", "fused")
-    summary["precision_change"]      = diff("precision", "a_alone", "fused")
-    # loc_error improvement = reduction (A-alone minus fused).
-    le = (None if per_method["a_alone"]["loc_error"] is None
-          or per_method["fused"]["loc_error"] is None
-          else per_method["a_alone"]["loc_error"] - per_method["fused"]["loc_error"])
-    summary["loc_error_improvement"] = le
-    summary["b_unique_tp"]           = sum(r["b_unique_tp"] for r in valid)
+    def loc_err_improvement(baseline):
+        # Reduction = baseline-alone loc error minus fused loc error.
+        lb, lf = per_method[baseline]["loc_error"], per_method["fused"]["loc_error"]
+        return None if lb is None or lf is None else lb - lf
+
+    summary["recall_improvement_a"]    = diff("recall", "a_alone", "fused")
+    summary["recall_improvement_b"]    = diff("recall", "b_alone", "fused")
+    summary["precision_change_a"]      = diff("precision", "a_alone", "fused")
+    summary["precision_change_b"]      = diff("precision", "b_alone", "fused")
+    summary["loc_error_improvement_a"] = loc_err_improvement("a_alone")
+    summary["loc_error_improvement_b"] = loc_err_improvement("b_alone")
+    summary["a_unique_tp"]             = sum(r["a_unique_tp"] for r in valid)
+    summary["b_unique_tp"]             = sum(r["b_unique_tp"] for r in valid)
     summary["mean_inference_time_s"] = float(np.mean(
         [r["inference_time_s"] for r in valid]))
 
-    for k in ("recall_improvement", "precision_change", "loc_error_improvement"):
+    for k in ("recall_improvement_a", "recall_improvement_b",
+              "precision_change_a", "precision_change_b",
+              "loc_error_improvement_a", "loc_error_improvement_b"):
         if summary[k] is not None:
             mlflow.log_metric(k, summary[k])
+    mlflow.log_metric("a_unique_tp", summary["a_unique_tp"])
     mlflow.log_metric("b_unique_tp", summary["b_unique_tp"])
     mlflow.log_metric("mean_inference_time_s", summary["mean_inference_time_s"])
 
@@ -464,16 +515,18 @@ def _build_summary(
     summary["depth_range_breakdown"] = depth_breakdown
 
     logger.info(
-        "=== Stage 4 Summary [%s %s] === recall A=%.2f B=%.2f fused=%.2f "
-        "(+%.2f) | loc_err A=%.2fm fused=%.2fm | b_unique_tp=%d",
+        "=== Stage 4 Summary [%s %s] === recall A=%.2f B=%.2f fused=%.2f | "
+        "A-gain +%.2f (b_unique_tp=%d) | B-gain +%.2f (a_unique_tp=%d) | "
+        "loc_err A=%.2fm B=%.2fm fused=%.2fm",
         scene, method,
         _fmt(per_method["a_alone"]["recall"]),
         _fmt(per_method["b_alone"]["recall"]),
         _fmt(per_method["fused"]["recall"]),
-        _fmt(summary["recall_improvement"]),
+        _fmt(summary["recall_improvement_a"]), summary["b_unique_tp"],
+        _fmt(summary["recall_improvement_b"]), summary["a_unique_tp"],
         _fmt(per_method["a_alone"]["loc_error"]),
+        _fmt(per_method["b_alone"]["loc_error"]),
         _fmt(per_method["fused"]["loc_error"]),
-        summary["b_unique_tp"],
     )
     return summary
 

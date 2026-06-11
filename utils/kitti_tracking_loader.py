@@ -23,7 +23,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-KITTI_CLASSES = ("Car", "Van", "Truck", "Pedestrian", "Cyclist")
+# Car-only pipeline (2026-06-10): Pedestrian and Cyclist dropped. Van and Truck
+# are kept as car-like vehicle GT. NOTE: the Stage-3 validator filters GT to its
+# own ("Car",) set, so Van/Truck labels loaded here are not matched as Car unless
+# explicitly remapped.
+KITTI_CLASSES = ("Car", "Van", "Truck")
 
 
 # ---------------------------------------------------------------------------
