@@ -63,6 +63,13 @@ Model: `PekingU/rtdetr_r50vd` (42,891,372 params).
 | Samples evaluated | 10 |
 | `ap_reliability` flag | **`ok`** |
 
+> **Caveat — predates the Car-only decision.** These numbers are verbatim from a
+> `validation_results.json` produced with Pedestrian detection still enabled
+> (`person → Pedestrian` in stage2.yaml). Pedestrian was dropped 2026-06-10
+> (Car-only pipeline), so the Pedestrian AP (1.0000) and the two-class mAP (0.9302)
+> will not appear on the next run — Car AP (0.8604) is the Car-only headline. Numbers
+> are not silently changed here; they will refresh on the next full validation run.
+
 - **AP method:** 11-point interpolated AP per class.
 - **`ap_reliability` + sample-size caveat:** the validator sets this flag to
   `low` when fewer than 10 samples are evaluated, otherwise `ok`. This run used
@@ -88,7 +95,7 @@ detected counts, and false-positive counts were not produced or logged.
 ## Stage 3 — Lift to 3D Positions (KITTI tracking, 5 sequences, 24 frames)
 
 Source: `outputs/lift3d/{method}/{seq}/validation_results.json`.
-Matching: greedy by 3D center distance, per class (Car ≤ 2.0 m, Ped ≤ 1.0 m).
+Matching: greedy by 3D center distance, per class (Car ≤ 2.0 m; Car-only pipeline).
 Depth-error and center-distance figures are TP-weighted means over matched pairs.
 
 ### Aggregate (all 5 sequences combined)
@@ -149,7 +156,7 @@ FP-heavy sequences.
 > only — no size or heading (not recoverable from stereo at range).
 
 > **Pending next run:** the validator now emits a **per-class** block
-> (`per_class.{Car,Pedestrian}`: `n_tp`, `n_fp`, `n_fn`, `depth_err`,
+> (`per_class.{Car}`: `n_tp`, `n_fp`, `n_fn`, `depth_err`,
 > `center_dist`) and a **depth-range breakdown** (`depth_range_breakdown`: bins
 > `0_10m` / `10_20m` / `20_40m` / `40m_plus`, each with `n`, `depth_err`,
 > `center_dist`; empty bins → `null` and are not logged to MLflow). Errors are
@@ -168,7 +175,7 @@ Each frame compares three prediction sets — **A-alone**, **B-alone** (B's Stag
 1–3 output registered into A's frame), **Fused** — against a **cooperative GT**:
 every vehicle visible to A *or* B, deduplicated by `actor_id` (A-visible instance
 wins). Matching is greedy BEV (x-z) centre distance per class, `matching.max_dist`
-from `config/stage4.yaml` (Car ≤ 2.0 m, Ped ≤ 1.0 m). All 85 coop-GT objects
+from `config/stage4.yaml` (Car ≤ 2.0 m; Car-only pipeline). All 85 coop-GT objects
 across the 20 frames are Cars.
 
 Cooperation is **mutual** — the fused output is shared, so both agents benefit and
@@ -229,6 +236,15 @@ SGBM fused 86 ped FP, WAFT 92 — which is what drags overall precision down.
 |--------|:------------:|:------------:|:------------:|:---------------:|
 | SGBM | 46 | 71 | 39 | 1.305 |
 | WAFT | 32 | 112 | 53 | 1.461 |
+
+> **Caveat — Stage 4 precision predates the Car-only decision.** This 20-frame run
+> was produced with Pedestrian detection still enabled (`person → Pedestrian` in
+> stage2.yaml), so every Pedestrian detection became a false positive (SGBM 86,
+> WAFT 92) and depressed precision. Pedestrian was dropped 2026-06-10 (Car-only
+> pipeline); the precision, FP, and ped-FP figures above will change — the
+> Pedestrian FPs vanish — on the next full validation run. Recall, localization
+> error, and the symmetric V2V gains are unaffected. Numbers are **not** silently
+> changed here.
 
 ### GT-depth-range breakdown (fused TP count · loc-err m)
 All cooperative GT is within 0–20 m (close-range intersection); the 20–40 m and

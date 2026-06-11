@@ -1,5 +1,5 @@
 # Stereo V2V — Project Status Report
-*As of 2026-06-10 · branch `main`*
+*As of 2026-06-11 · branch `main`*
 
 ## 1. What the project is
 
@@ -40,16 +40,16 @@ from the depth-sampling study in `experiments/percentile_choice.md`. Sample
 sizes are stated; small-sample numbers are flagged as indicative, not
 generalization estimates.
 
-### Stage 1 — Depth (KITTI object split, **5 samples**, frames 000000–000004)
+### Stage 1 — Depth (KITTI object split, **10 samples**, frames 000000–000009)
 `outputs/depth/object/{sgbm,waft}/validation_results.json`
 
 | Metric | SGBM | WAFT |
 |---|---|---|
-| EPE (end-point error) | 4.80 px | **0.89 px** |
-| D1 (outlier rate) | 16.00 % | **2.69 %** |
-| Coverage (valid GT px) | 32.1 % | **100 %** |
+| EPE (end-point error) | 4.57 px | **0.87 px** |
+| D1 (outlier rate) | 13.81 % | **2.34 %** |
+| Coverage (valid GT px) | 37.0 % | **100 %** |
 
-**WAFT is the trusted, more accurate depth method** (~5.4× lower EPE, ~6× lower
+**WAFT is the trusted, more accurate depth method** (~5.2× lower EPE, ~5.9× lower
 D1, full coverage). This supersedes the earlier "WAFT output is suspect" status —
 that was a bug in the retired offline-precompute path, now fixed (WAFT runs
 inference directly; see §3). SGBM remains a valid sparse baseline.
@@ -60,19 +60,23 @@ inference directly; see §3). SGBM remains a valid sparse baseline.
 | Class | AP |
 |---|---|
 | Car | 0.860 |
-| Pedestrian | 1.000 |
-| **mAP** | **0.930** |
 
-Confirms the detector runs and maps COCO→KITTI correctly. 10 frames is still a
-small evaluation set — indicative, not a benchmark accuracy.
+Car AP **0.860** is the headline under the Car-only pipeline (= mAP with a single
+class). The earlier mAP of 0.930 averaged in a Pedestrian AP of 1.000; Pedestrian
+was dropped 2026-06-10, so the recorded `validation_results.json` predates Car-only
+and Stage 2 reports Car-only on the next run. Confirms the detector runs and maps
+COCO→KITTI correctly. 10 frames is still a small evaluation set — indicative, not a
+benchmark accuracy.
 
 ### Stage 3 — 3D lifting (position-only)
-The end-to-end **matching** metrics (TP/FP/FN, centre distance) have **not been
-re-run cleanly at the newly tuned depth-sampling percentiles** (the
-`outputs/lift3d/**/validation_results.json` files accumulate frames from several
-prior runs at the *old* percentiles and are superseded — do not cite them).
+The end-to-end **matching** metrics (TP/FP/FN, centre distance) are regenerated at
+the tuned percentiles — the `outputs/lift3d/**/validation_results.json` files carry
+`depth_sampling = percentile_20` (SGBM) / `percentile_35` (WAFT) and the
+per-sequence numbers are in VALIDATION_SUMMARY.md (Stage 3). Still pending are the
+**per-class** and **depth-range breakdown** blocks: the validator now emits them,
+but the on-disk JSONs predate that code and will populate on the next run.
 
-What **is** current and clean is the **depth-sampling accuracy study**
+The controlled, isolated analysis is the **depth-sampling accuracy study**
 (`experiments/percentile_choice.md`): a multi-sequence sweep on static parked
 cars (KITTI tracking 0000–0004, 66 detection↔GT pairs, association fixed by 2D
 IoU so the percentile is isolated from matching). Headline depth-error (|Z − GT
@@ -88,9 +92,9 @@ Per-sequence MAE shows the near/far split clearly (WAFT @p35): 0000 = 1.84 m,
 range. Beyond ~30 m, depth error is governed by the depth **map** at range
 (disparity error amplified by `Z = f·B/d`), not by the sampling percentile.
 
-- **Status:** ⚙️ Code current and unit-tested; depth-sampling percentiles freshly
-  re-tuned (2026-06-05); end-to-end matching re-validation at the new config is
-  pending.
+- **Status:** Code current and unit-tested; depth-sampling percentiles re-tuned
+  (2026-06-05) and the matching JSONs regenerated at them; the per-class /
+  depth-range breakdown blocks will populate on the next run.
 
 ### Stage 4 — V2V fusion (CARLA, **20 frames**, cooperative GT)
 `outputs/fusion/carla/{sgbm,waft}/validation_results.json`
@@ -141,21 +145,21 @@ not captured in the 2026-06-10 run (needs a re-run).
 ### Stage 1 — Depth (`stages/stage1_depth.py`)
 Computes a disparity map from a rectified stereo pair, converts to metric depth
 via `Z = f·B/d`, saves `.npy` + a colorized `.png`.
-- **SGBM** — OpenCV `StereoSGBM`; invalid pixels → NaN (sparse, ~32 % coverage).
+- **SGBM** — OpenCV `StereoSGBM`; invalid pixels → NaN (sparse, ~37 % coverage).
 - **WAFT** — a learned deep-stereo net (WAFT-Stereo) run **directly in-process**
   (`get_cfg` + `WAFT(cfg)` + checkpoint, PEFT `merge_and_unload`, module-level
   cached; CUDA if available else CPU, ~85 s/image on CPU). The old offline
   precompute path and its three bugs (÷255 input, positional call, wrong output
   tensor) are gone.
-- **Status:** ✅ Both work. **WAFT is the trusted, more accurate method**; SGBM is
+- **Status:** Both work. **WAFT is the trusted, more accurate method**; SGBM is
   the sparse baseline. Run `--method waft` from the project root so WAFT-Stereo
   imports resolve.
 
 ### Stage 2 — Detection (`stages/stage2_detect.py`)
 Runs pretrained **RT-DETR** on the left image, keeps COCO classes mapped to KITTI
-(`car→Car`, `person→Pedestrian`), thresholds by confidence. Outputs 2D boxes
-`{label, confidence, x1, y1, x2, y2}`.
-- **Status:** ✅ Working (mAP 0.930 over 10 frames).
+(`car/truck/bus→Car`; Car-only pipeline), thresholds by confidence. Outputs 2D
+boxes `{label, confidence, x1, y1, x2, y2}`.
+- **Status:** Working (Car AP 0.860 over 10 frames).
 
 ### Stage 3 — Lift to 3D position (`stages/stage3_lift.py`)
 For each 2D box: samples a single disparity value inside the box (a per-method
@@ -163,8 +167,8 @@ For each 2D box: samples a single disparity value inside the box (a per-method
 converts to depth, and **unprojects the box centre** to a 3D point `(x, y, z)`.
 Confidence is propagated as `conf_2d × coverage_ratio`. The source 2D box is
 carried for matching. Validation (`validate_stage3_lift.py`) matches
-predictions↔GT by **3D centre distance** per class (`matching.max_dist`: Car 2.0,
-Ped 1.0) and reports `mean_depth_err` + `mean_center_dist`.
+predictions↔GT by **3D centre distance** per class (`matching.max_dist`: Car 2.0;
+Car-only pipeline) and reports `mean_depth_err` + `mean_center_dist`.
 - **Depth-sampling percentiles (tuned 2026-06-05, `experiments/percentile_choice.md`):**
   the two methods need **opposite** percentiles because their valid-pixel
   distributions differ. **SGBM = `percentile_20`** (sparse; the consistency check
@@ -173,8 +177,8 @@ Ped 1.0) and reports `mean_depth_err` + `mean_center_dist`.
   was the worst end of the curve). **WAFT = `percentile_35`** (dense; after a
   top-40 % crop + 6 m gate, a mid-low percentile gives near-zero bias; the old
   `percentile_60` sampled the near surface).
-- **Status:** ⚙️ Code current and unit-tested; end-to-end matching re-validation at
-  the new percentiles pending.
+- **Status:** Code current and unit-tested; matching JSONs are at the new
+  percentiles; the per-class / depth-range breakdown blocks populate on the next run.
 
 ### Stage 4 — V2V fusion (`stages/stage4_fusion.py` + `utils/fusion.py`)
 The **source-agnostic core** registers Vehicle B's boxes into Vehicle A's frame
@@ -183,7 +187,7 @@ corroborated pairs (noisy-OR confidence, confidence-weighted centre; size/headin
 merged only if present — the core handles both position-only and full-3D boxes).
 The CARLA backend (`run_carla`) is the data plumbing around it: it runs Stages
 1-3 per agent (`detect_agent_boxes`), registers B into A's frame, and fuses.
-- **Status:** ✅ Core implemented + unit-tested (31 tests) and now **validated
+- **Status:** Core implemented + unit-tested (31 tests) and now **validated
   end-to-end on CARLA** (20 frames). The evaluation is **symmetric** — both agents'
   gains are scored (`recall_improvement_a`/`b_unique_tp` for A, and
   `recall_improvement_b`/`a_unique_tp` for B). Fusion lifts A's recall 0.21→0.54
@@ -210,7 +214,9 @@ The CARLA backend (`run_carla`) is the data plumbing around it: it runs Stages
    vehicles only, so every Pedestrian detection is a false positive (and fusion
    keeps both agents' FPs), holding fused precision to ~0.23 (SGBM) despite the
    strong recall gain. The run is 20 frames at close range (all GT 0–20 m) — an
-   indicative V2V demonstration, not a benchmark.
+   indicative V2V demonstration, not a benchmark. **These Stage-4 precision figures
+   predate the Car-only switch (2026-06-10)** — see the caveat in
+   VALIDATION_SUMMARY.md; the next full run will not produce Pedestrian FPs.
 5. **Heading/orientation is intentionally out of scope.** Stereo cannot recover
    per-object heading at range (ray-angle assumes the object faces the camera ray;
    pseudo-LiDAR PCA locks onto depth noise; a learned head only reached a ~69°
@@ -240,13 +246,13 @@ full 3D) and the **symmetric** cooperation metrics (`build_coop_gt`, `unique_tp`
 
 | Stage | Status | One line |
 |---|---|---|
-| 1 Depth | ✅ working | WAFT accurate (EPE 0.89 px, 5 frames) and trusted; SGBM is the sparse baseline. |
-| 2 Detect | ✅ working | RT-DETR runs and maps to KITTI; mAP 0.930 over 10 frames. |
-| 3 Lift | ⚙️ code current, depth-sampling re-tuned | Emits 3D position + 2D box; percentiles tuned (SGBM p20, WAFT p35); end-to-end re-run pending. |
-| 4 Fusion | ✅ validated on CARLA | Symmetric V2V gain: A recall 0.21→0.54 (+23 B-unique TPs), B recall 0.38→0.54 (SGBM, 20 frames), no loc penalty. |
+| 1 Depth | working | WAFT accurate (EPE 0.87 px, 10 frames) and trusted; SGBM is the sparse baseline. |
+| 2 Detect | working | RT-DETR runs and maps to KITTI; Car AP 0.860 over 10 frames. |
+| 3 Lift | code current, depth-sampling re-tuned | Emits 3D position + 2D box; percentiles tuned (SGBM p20, WAFT p35); per-class/depth-range breakdown pending. |
+| 4 Fusion | validated on CARLA | Symmetric V2V gain: A recall 0.21→0.54 (+23 B-unique TPs), B recall 0.38→0.54 (SGBM, 20 frames), no loc penalty. |
 
 ### Takeaway
-> The full 4-stage pipeline now runs end-to-end and is unit-tested (157 tests
+> The full 4-stage pipeline now runs end-to-end and is unit-tested (162 tests
 > green). Stage 1 (WAFT accurate and trusted, SGBM baseline) and Stage 2 run with
 > spot-check validation. Stage 3 produces honest stereo-recoverable output (3D
 > position + 2D box) at re-tuned per-method depth-sampling percentiles. **Stage 4
