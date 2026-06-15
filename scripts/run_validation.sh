@@ -195,7 +195,7 @@ cat <<EOF
   Started      : $(date '+%Y-%m-%d %H:%M:%S')
 
   Depth method(s)        : ${METHODS[*]}
-  MLflow tracking        : ./mlruns (each stage logs automatically)
+  MLflow tracking        : sqlite:///mlflow.db (per config/base.yaml; each stage logs automatically)
 
   Planned workload
   ----------------

@@ -434,7 +434,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage1_config", default="config/stage1.yaml")
     parser.add_argument("--stage2_config", default="config/stage2.yaml")
     parser.add_argument("--stage3_config", default="config/stage3.yaml")
-    return parser.parse_args()
+    args = parser.parse_args()
+    # Windows directory tab-completion appends a trailing separator (e.g.
+    # `--seq_id 0016\`), which corrupts every seq-derived path into
+    # `.../calib/0016\.txt` (pathlib splits on the `\`). Strip surrounding
+    # whitespace and any trailing slash/backslash so seq_id is always clean.
+    args.seq_id = args.seq_id.strip().strip("/\\")
+    return args
 
 
 if __name__ == "__main__":
