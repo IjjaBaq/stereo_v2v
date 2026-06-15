@@ -6,4 +6,7 @@ data:
   split: training
   
 mlflow:
-  tracking_uri: ./mlruns
+  # SQLite (DB) backend, not the legacy ./mlruns file store: MLflow >= 3.x puts
+  # the file store in maintenance mode and refuses to write to it unless
+  # MLFLOW_ALLOW_FILE_STORE=True. The DB backend works on every MLflow version.
+  tracking_uri: sqlite:///mlflow.db

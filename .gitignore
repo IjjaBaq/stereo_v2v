@@ -9,6 +9,8 @@ data/
 outputs/
 models/
 mlruns/
+mlflow.db
+mlartifacts/
 
 # Misc
 *.log
