@@ -37,7 +37,10 @@ set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || { echo "ERROR: cannot cd to project root '$ROOT'"; exit 2; }
 
-if [[ -x "stereo_v2v_env/bin/python" ]]; then
+
+if [[ "$OS" == "Windows_NT" ]]; then
+    PY="$ROOT/stereo_v2v_env/Scripts/python.exe"
+elif [[ -x "stereo_v2v_env/bin/python" ]]; then
     PY="$ROOT/stereo_v2v_env/bin/python"
 else
     PY="python3"

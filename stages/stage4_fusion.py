@@ -37,7 +37,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.config_loader import load_configs
-from utils.fusion import fuse
+from utils.fusion import build_coop_gt, fuse
+from utils.visualization import make_fusion_bev
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +99,18 @@ def detect_agent_boxes(
     from stages.stage2_detect import run as run_stage2
     from stages.stage3_lift import apply_method_overrides, run as run_stage3
     from utils.carla_loader import (
+        label_box_2d,
         load_carla_disparity_gt,
         load_carla_frame,
-        project_box_to_2d,
     )
     from utils.depth_metrics import evaluate
-    from utils.visualization import make_detection_visualization, make_side_by_side
+    from utils.fusion import match_boxes
+    from utils.visualization import (
+        make_2d_overlay_visualization,
+        make_bev_visualization,
+        make_detection_visualization,
+        make_side_by_side,
+    )
 
     frame = load_carla_frame(scenario_dir, agent, timestamp)
     sample_id = f"{agent}_{frame['frame_id']}"
@@ -159,11 +166,13 @@ def detect_agent_boxes(
         output_dir_override=f"outputs/detections/carla/{agent}",
     )
 
-    # Detection visualization (Pred | GT). CARLA GT is 3D, so project each GT
-    # box to a 2D bounding box before the same side-by-side overlay KITTI uses.
+    # Detection visualization (Pred | GT). Use each GT car's pixel-tight 2D box
+    # (segmentation-derived, snug to the visible car) when the export provides it,
+    # else fall back to the projected-3D-box envelope — same side-by-side overlay
+    # KITTI uses.
     calib = frame["calib"]
     gt_2d = [
-        project_box_to_2d(b, calib["P2"], calib["image_w"], calib["image_h"])
+        label_box_2d(b, calib["P2"], calib["image_w"], calib["image_h"])
         for b in frame["labels"]
     ]
     det_vis = make_detection_visualization(
@@ -174,6 +183,7 @@ def detect_agent_boxes(
     cv2.imwrite(str(det_png), det_vis)
     logger.info("Saved detection visualization → %s", det_png)
 
+    lift_dir = f"outputs/lift3d/carla/{method}/{agent}"
     s3 = run_stage3(
         sample_id=sample_id,
         base_cfg=base_cfg,
@@ -182,11 +192,36 @@ def detect_agent_boxes(
         disp=s1["disp"],
         boxes2d=s2["boxes"],
         calib=frame["calib"],
-        output_dir_override=f"outputs/lift3d/carla/{method}/{agent}",
+        output_dir_override=lift_dir,
+    )
+
+    # Stage-3 lift visualization (BEV scatter + 2D overlay), same KITTI layout
+    # the Stage-3 validator uses. CARLA GT is 3D, so project each GT box to its
+    # source 2D rectangle for the overlay; matching is per-class BEV centre
+    # distance (config/stage3.yaml matching.max_dist), same criterion as KITTI.
+    preds3d = s3["positions"]
+    gt_lift = [
+        {
+            "label": b["label"], "x": b["x"], "y": b["y"], "z": b["z"],
+            **label_box_2d(b, calib["P2"], calib["image_w"], calib["image_h"]),
+        }
+        for b in frame["labels"]
+    ]
+    max_dist = stage3_cfg.get("matching", {}).get("max_dist", {})
+    lift_matches, _, _ = match_boxes(preds3d, gt_lift, max_dist)
+    frame_num = int(frame["frame_id"])
+    make_bev_visualization(
+        preds3d, gt_lift, lift_matches, frame_id=frame_num, seq_id=agent,
+        output_path=Path(lift_dir) / f"{frame['frame_id']}_bev.png",
+    )
+    make_2d_overlay_visualization(
+        frame["left"], preds3d, gt_lift, lift_matches,
+        frame_id=frame_num, seq_id=agent,
+        output_path=Path(lift_dir) / f"{frame['frame_id']}_2d.png",
     )
 
     infer_s = time.perf_counter() - t0
-    return s3["positions"], infer_s, depth_eval
+    return preds3d, infer_s, depth_eval
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +399,14 @@ def run_carla(
 
     result = fuse_and_write(boxes_a, boxes_b, T_b_to_a, scene_id, meta,
                             output_dir, stage_cfg)
+
+    # Fusion BEV (KITTI-style scatter): cooperative GT vs A-alone vs fused. The
+    # GT path can build cooperative GT from the two agents' GT boxes; the
+    # detector path has no GT loaded here, so it shows A-alone vs fused only.
+    coop_gt = build_coop_gt(boxes_a, boxes_b, T_b_to_a) if use_gt else []
+    make_fusion_bev(coop_gt, boxes_a, result["boxes"], scene_id,
+                    output_dir / f"{scene_id}_bev.png")
+
     if infer_s is not None:
         result["inference_time_s"] = round(infer_s, 3)
     if depth_eval:

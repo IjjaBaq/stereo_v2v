@@ -60,9 +60,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stages.stage2_detect import load_model
 from stages.stage4_fusion import detect_agent_boxes
-from utils.carla_loader import load_carla_pair, load_carla_transform
+from utils.carla_loader import (
+    load_carla_ego_boxes,
+    load_carla_pair,
+    load_carla_transform,
+)
 from utils.config_loader import load_configs
-from utils.fusion import bev_distance, fuse, match_boxes, transform_box
+from utils.fusion import (
+    bev_distance,
+    build_coop_gt,
+    fuse,
+    match_boxes,
+    transform_box,
+)
 from utils.validation_io import merge_samples
 from utils.visualization import make_fusion_bev
 
@@ -84,58 +94,8 @@ DEPTH_BINS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Cooperative ground truth
-# ---------------------------------------------------------------------------
-
-def build_coop_gt(
-    boxes_a_gt: list[dict],
-    boxes_b_gt: list[dict],
-    T_b_to_a: np.ndarray,
-) -> list[dict]:
-    """Build cooperative GT in A's frame, deduplicated by actor_id.
-
-    Vehicles visible to A are kept as-is; vehicles visible to B are registered
-    into A's frame with ``transform_box`` and added only if their ``actor_id``
-    is not already present (the A-visible instance wins — zero registration
-    error). Each returned box is tagged ``seen_by`` ∈ {"A", "B", "both"}.
-
-    Args:
-        boxes_a_gt: Vehicle A's GT vehicles (A's frame), carry ``actor_id``.
-        boxes_b_gt: Vehicle B's GT vehicles (B's frame), carry ``actor_id``.
-        T_b_to_a: 4x4 transform mapping B's camera frame into A's.
-
-    Returns:
-        Cooperative GT box dicts in A's frame, each with ``seen_by`` added.
-    """
-    by_actor: dict = {}
-    seen: dict = {}
-
-    def key(box: dict, i: int):
-        aid = box.get("actor_id")
-        return aid if aid is not None else f"_a_{i}"
-
-    for i, box in enumerate(boxes_a_gt):
-        k = key(box, i)
-        by_actor[k] = dict(box)
-        seen[k] = {"A"}
-
-    for i, box in enumerate(boxes_b_gt):
-        reg = transform_box(box, T_b_to_a)
-        aid = reg.get("actor_id")
-        k = aid if aid is not None else f"_b_{i}"
-        if k in by_actor:
-            seen[k].add("B")
-        else:
-            by_actor[k] = reg
-            seen[k] = {"B"}
-
-    coop = []
-    for k, box in by_actor.items():
-        s = seen[k]
-        box["seen_by"] = "both" if s == {"A", "B"} else next(iter(s))
-        coop.append(box)
-    return coop
+# Cooperative ground truth (build_coop_gt) lives in utils.fusion so the run path
+# can reuse it without importing this validation script.
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +106,7 @@ def score_against_gt(
     preds: list[dict],
     coop_gt: list[dict],
     max_dist: dict,
+    ignore_boxes: list[dict] | None = None,
 ) -> dict:
     """Match predictions to cooperative GT and collect TP/FP/FN detail.
 
@@ -154,13 +115,21 @@ def score_against_gt(
     depth bin. ``matched_gt_keys`` records which GT (by actor_id) each method
     recovered — used for the symmetric ``a_unique_tp`` / ``b_unique_tp``.
 
+    Ignore regions: a prediction that matches no coop-GT but lands within the
+    per-class threshold of an ``ignore_boxes`` entry (the ego vehicles — see
+    ``utils.carla_loader.load_carla_ego_boxes``) is counted neither as TP nor FP.
+    An agent detecting the *other* ego is legitimate perception but the egos are
+    not coop-GT targets (their poses are shared over V2V), so penalizing it as a
+    false positive would understate precision (KITTI ``DontCare`` semantics).
+
     Args:
         preds: Predicted boxes in A's frame (label, x, y, z, ...).
         coop_gt: Cooperative GT boxes in A's frame (carry actor_id, seen_by).
         max_dist: Per-class BEV match threshold.
+        ignore_boxes: Boxes (A's frame) whose matches are ignored, not FP.
 
     Returns:
-        Dict with n_tp, n_fp, n_fn, tp_pairs, fp_labels, fn_labels,
+        Dict with n_tp, n_fp, n_fn, n_ignored, tp_pairs, fp_labels, fn_labels,
         matched_gt_keys.
     """
     matches, fp_idx, fn_idx = match_boxes(preds, coop_gt, max_dist)
@@ -176,12 +145,26 @@ def score_against_gt(
         })
         matched_gt_keys.add(gt.get("actor_id", gi))
 
+    # Split unmatched predictions into ego-ignored vs genuine false positives.
+    ignore_boxes = ignore_boxes or []
+
+    def _is_ignored(pred: dict) -> bool:
+        thr = float(max_dist.get(pred["label"], 0.0))
+        return any(
+            b["label"] == pred["label"] and bev_distance(pred, b) <= thr
+            for b in ignore_boxes
+        )
+
+    real_fp_idx = [pi for pi in fp_idx if not _is_ignored(preds[pi])]
+    n_ignored = len(fp_idx) - len(real_fp_idx)
+
     return {
         "n_tp":            len(matches),
-        "n_fp":            len(fp_idx),
+        "n_fp":            len(real_fp_idx),
         "n_fn":            len(fn_idx),
+        "n_ignored":       n_ignored,
         "tp_pairs":        tp_pairs,
-        "fp_labels":       [preds[pi]["label"] for pi in fp_idx],
+        "fp_labels":       [preds[pi]["label"] for pi in real_fp_idx],
         "fn_labels":       [coop_gt[gi]["label"] for gi in fn_idx],
         "matched_gt_keys": matched_gt_keys,
     }
@@ -266,12 +249,20 @@ def validate_frame(
     )
     coop_gt = build_coop_gt(boxes_a_gt, boxes_b_gt, T_b_to_a)
 
+    # Ego boxes (in A's frame) used as ignore regions: an agent detecting the
+    # other ego is legitimate perception but not a coop-GT target, so it must not
+    # count as a false positive.
+    ego_boxes = load_carla_ego_boxes(
+        scenario_dir, timestamp, agent_a=agent_a, agent_b=agent_b)
+
     # Predictions — one detection pass per agent (the expensive part).
-    a_pred, t_a = detect_agent_boxes(
+    # detect_agent_boxes returns (positions, infer_seconds, depth_eval); the
+    # per-agent depth metrics are surfaced by the Stage-4 run path, not here.
+    a_pred, t_a, _ = detect_agent_boxes(
         scenario_dir, agent_a, timestamp, base_cfg,
         stage1_cfg, stage2_cfg, stage3_cfg, method, processor, model,
     )
-    b_pred, t_b = detect_agent_boxes(
+    b_pred, t_b, _ = detect_agent_boxes(
         scenario_dir, agent_b, timestamp, base_cfg,
         stage1_cfg, stage2_cfg, stage3_cfg, method, processor, model,
     )
@@ -279,7 +270,7 @@ def validate_frame(
     fused, fuse_stats = fuse(a_pred, b_pred, T_b_to_a, stage4_cfg)
 
     pred_sets = {"a_alone": a_pred, "b_alone": b_pred_in_a, "fused": fused}
-    scored = {m: score_against_gt(p, coop_gt, max_dist)
+    scored = {m: score_against_gt(p, coop_gt, max_dist, ignore_boxes=ego_boxes)
               for m, p in pred_sets.items()}
 
     # Symmetric cooperation gain — GT one agent uniquely saw that fusion recovers
@@ -297,6 +288,10 @@ def validate_frame(
         "timestamp":   timestamp,
         "scene_id":    scene_id,
         "n_coop_gt":   len(coop_gt),
+        # Per-frame coop-GT vehicle IDs so the run summary can report the number
+        # of DISTINCT vehicles, not just the per-frame instance sum (the same few
+        # cars recur across frames).
+        "coop_gt_ids": [g.get("actor_id") for g in coop_gt],
         "a_unique_tp": a_unique_tp,
         "b_unique_tp": b_unique_tp,
         "inference_time_s": round(t_a + t_b, 3),
@@ -337,10 +332,12 @@ def _pooled_method_summary(valid: list[dict], m: str) -> dict:
     n_tp = sum(r["methods"][m]["n_tp"] for r in valid)
     n_fp = sum(r["methods"][m]["n_fp"] for r in valid)
     n_fn = sum(r["methods"][m]["n_fn"] for r in valid)
+    n_ignored = sum(r["methods"][m].get("n_ignored", 0) for r in valid)
     errs = [p["bev_err"] for r in valid for p in r["methods"][m]["tp_pairs"]]
     counts = {"n_tp": n_tp, "n_fp": n_fp, "n_fn": n_fn}
     return {
         **counts,
+        "n_ignored": n_ignored,
         "recall":    _recall(counts),
         "precision": _precision(counts),
         "loc_error": float(np.mean(errs)) if errs else None,
@@ -471,6 +468,15 @@ def _build_summary(
     summary["loc_error_improvement_b"] = loc_err_improvement("b_alone")
     summary["a_unique_tp"]             = sum(r["a_unique_tp"] for r in valid)
     summary["b_unique_tp"]             = sum(r["b_unique_tp"] for r in valid)
+
+    # Coop-GT counts: instances = per-frame sum (the same vehicle recurs across
+    # frames); distinct = number of unique vehicles by actor_id. Reporting only
+    # the instance sum is misleading (e.g. 15 instances = 3 distinct cars × 5
+    # frames), so surface both.
+    coop_ids = [aid for r in valid for aid in r.get("coop_gt_ids", []) if aid is not None]
+    summary["n_coop_gt_instances"] = sum(r["n_coop_gt"] for r in valid)
+    summary["n_coop_gt_distinct"]  = len(set(coop_ids))
+
     summary["mean_inference_time_s"] = float(np.mean(
         [r["inference_time_s"] for r in valid]))
 
@@ -481,6 +487,8 @@ def _build_summary(
             mlflow.log_metric(k, summary[k])
     mlflow.log_metric("a_unique_tp", summary["a_unique_tp"])
     mlflow.log_metric("b_unique_tp", summary["b_unique_tp"])
+    mlflow.log_metric("n_coop_gt_instances", summary["n_coop_gt_instances"])
+    mlflow.log_metric("n_coop_gt_distinct", summary["n_coop_gt_distinct"])
     mlflow.log_metric("mean_inference_time_s", summary["mean_inference_time_s"])
 
     # Per-class breakdown (counts summed; loc error pooled over TP pairs).
@@ -515,10 +523,12 @@ def _build_summary(
     summary["depth_range_breakdown"] = depth_breakdown
 
     logger.info(
-        "=== Stage 4 Summary [%s %s] === recall A=%.2f B=%.2f fused=%.2f | "
+        "=== Stage 4 Summary [%s %s] === coop-GT %d distinct / %d instances | "
+        "recall A=%.2f B=%.2f fused=%.2f | "
         "A-gain +%.2f (b_unique_tp=%d) | B-gain +%.2f (a_unique_tp=%d) | "
         "loc_err A=%.2fm B=%.2fm fused=%.2fm",
         scene, method,
+        summary["n_coop_gt_distinct"], summary["n_coop_gt_instances"],
         _fmt(per_method["a_alone"]["recall"]),
         _fmt(per_method["b_alone"]["recall"]),
         _fmt(per_method["fused"]["recall"]),

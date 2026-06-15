@@ -73,6 +73,57 @@ def transform_box(box: dict, T: np.ndarray) -> dict:
     return out
 
 
+def build_coop_gt(
+    boxes_a: list[dict],
+    boxes_b: list[dict],
+    T_b_to_a: np.ndarray,
+) -> list[dict]:
+    """Build cooperative ground truth in A's frame, deduplicated by actor_id.
+
+    The union of every vehicle visible to A *or* B, all expressed in A's frame:
+    A-visible vehicles are kept as-is; B-visible vehicles are registered with
+    ``transform_box`` and added only if their ``actor_id`` is not already present
+    (the A-visible instance wins — it carries zero registration error). Each box
+    is tagged ``seen_by`` ∈ {"A", "B", "both"}. Source-agnostic (used by both the
+    Stage-4 validator's scoring and the run path's BEV figure).
+
+    Args:
+        boxes_a: Vehicle A's boxes (A's frame), carry ``actor_id``.
+        boxes_b: Vehicle B's boxes (B's frame), carry ``actor_id``.
+        T_b_to_a: 4x4 transform mapping B's camera frame into A's.
+
+    Returns:
+        Cooperative box dicts in A's frame, each with ``seen_by`` added.
+    """
+    by_actor: dict = {}
+    seen: dict = {}
+
+    def key(box: dict, i: int, side: str):
+        aid = box.get("actor_id")
+        return aid if aid is not None else f"_{side}_{i}"
+
+    for i, box in enumerate(boxes_a):
+        k = key(box, i, "a")
+        by_actor[k] = dict(box)
+        seen[k] = {"A"}
+
+    for i, box in enumerate(boxes_b):
+        reg = transform_box(box, T_b_to_a)
+        k = key(reg, i, "b")
+        if k in by_actor:
+            seen[k].add("B")
+        else:
+            by_actor[k] = reg
+            seen[k] = {"B"}
+
+    coop = []
+    for k, box in by_actor.items():
+        s = seen[k]
+        box["seen_by"] = "both" if s == {"A", "B"} else next(iter(s))
+        coop.append(box)
+    return coop
+
+
 # ---------------------------------------------------------------------------
 # Matching
 # ---------------------------------------------------------------------------

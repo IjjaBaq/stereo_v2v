@@ -86,14 +86,26 @@ def make_side_by_side(
         pred[~np.isnan(pred)].ravel(),
         gt[~np.isnan(gt)].ravel(),
     ])
-    d_min = float(combined.min()) if combined.size else 0.0
-    d_max = float(combined.max()) if combined.size else 1.0
+    # Robust shared colour scale: clip to the 2nd–98th percentile of valid
+    # disparity so a handful of very-near (large-disparity) pixels don't compress
+    # the bulk of the map toward black. CARLA GT in particular has sparse
+    # near-field spikes (up to ~330 px) that crush a raw min/max scale.
+    if combined.size:
+        d_min = float(np.percentile(combined, 2))
+        d_max = float(np.percentile(combined, 98))
+        if d_max <= d_min:  # degenerate (near-constant disparity) — fall back
+            d_min, d_max = float(combined.min()), float(combined.max())
+    else:
+        d_min, d_max = 0.0, 1.0
 
     def _colorize(disp: np.ndarray) -> np.ndarray:
         valid = ~np.isnan(disp)
         norm  = np.zeros_like(disp)
         if d_max > d_min:
             norm[valid] = (disp[valid] - d_min) / (d_max - d_min) * 255.0
+        # Clip before the uint8 cast: percentile clipping leaves values >255
+        # (and <0) which would otherwise wrap around modulo 256.
+        norm = np.clip(norm, 0.0, 255.0)
         colored = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_MAGMA)
         colored[~valid] = 0
         return colored

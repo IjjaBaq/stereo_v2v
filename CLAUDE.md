@@ -85,7 +85,24 @@
   end-to-end; the fusion core (`utils/fusion.py`) is complete and unit-tested.
   The validator scores cooperation **symmetrically** — both agents gain:
   `recall_improvement_a`/`b_unique_tp` (A's gain from B) and
-  `recall_improvement_b`/`a_unique_tp` (B's gain from A). Latest SGBM run (20
-  frames) shows A recall 0.21→0.54 (+0.33, 23 B-unique TPs) and B recall
-  0.38→0.54 (+0.16). `a_unique_tp` is newly added and needs a re-run to populate
-  (the 2026-06-10 JSON predates it) — see VALIDATION_SUMMARY.md.
+  `recall_improvement_b`/`a_unique_tp` (B's gain from A). Latest SGBM run (5
+  frames: 50/100/150/200/250, ego-excluded coop-GT = 3 distinct cars / 15
+  instances) shows A recall
+  0.80→fused 1.00 (+0.20, 3 B-unique TPs) and B recall 0.47→1.00 (+0.53, 4
+  A-unique TPs); BEV loc-error A 0.82 m / B 0.92 m → fused 0.75 m. See
+  VALIDATION_SUMMARY.md. (These supersede the pre-ego-exclusion numbers — the
+  earlier b_unique_tp=6 was inflated by Vehicle A's own car appearing in B's GT.)
+
+## Temporary code
+- **Proximity-based ego exclusion** (`utils/carla_loader.py`, `_drop_ego_boxes`).
+  The current `data/carla` export lists every `vehicle.*` actor in `gt_boxes`,
+  including the two ego vehicles. An ego is invisible to its own camera but
+  fully visible to the other agent, so it survives the per-agent visibility
+  filter via the other agent and pollutes the cooperative GT (one agent
+  "detecting" the other's car inflates `b_unique_tp`/`a_unique_tp` and biases
+  recall). As an interim fix the loader drops any GT box whose world (x, y) is
+  within `_SELF_EXCLUDE_M` (2 m) of an agent pose. The collector now also tags
+  the egos `is_ego: true` (`scripts/collect_carla_data.py`), and
+  `_drop_ego_boxes` honors that flag first — so **after a re-collection the
+  `is_ego` tag takes over automatically and the proximity block (marked
+  `# TEMPORARY:` … `# END TEMPORARY`) can be deleted with no behavior change.**

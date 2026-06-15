@@ -54,11 +54,16 @@ Coordinate conventions honored (CARLA's own, verified numerically)
                       [1, 0, 0, 0],   # cam_z =  agent_x  (forward)
                       [0, 0, 0, 1]]
 
-- Inter-agent transform: camB → agentB → world → agentA → camA, i.e.
-  ``T_b_to_a = LIDAR_TO_CAM @ inv(T_world_a) @ T_world_b @ inv(LIDAR_TO_CAM)``.
+- Inter-agent transform: camB → world → camA, between the two LEFT-CAMERA
+  frames (mount included via ``_world_from_camera``), i.e.
+  ``T_b_to_a = LIDAR_TO_CAM @ inv(T_world_camA) @ T_world_camB @ inv(LIDAR_TO_CAM)``.
 - Heading: a vehicle's camera heading is the relative yaw to the observing
-  agent, ``wrap_to_pi(radians(world_yaw - agent_yaw))`` (sign consistent with
-  ``utils.fusion.transform_box``'s cam-Y yaw; assumes near-planar vehicles).
+  agent converted to the KITTI rotation_y convention,
+  ``wrap_to_pi(radians(world_yaw - agent_yaw) - pi/2)`` (ry=0 ⇒ length along
+  camera X; a car pointing along +Z is ry=-pi/2). The -pi/2 is required because
+  CARLA relative-yaw 0 means the car points along +Z; omitting it laid the
+  vehicle length out laterally and made projected 2D boxes ~2x too wide. Sign
+  consistent with ``utils.fusion.transform_box``'s cam-Y yaw; near-planar.
 
 Sanity check (implemented in ``_sanity_check_shared_vehicles``): a vehicle seen
 by both agents must register to ~0 BEV displacement after ``T_b_to_a`` — a large
@@ -86,6 +91,14 @@ LIDAR_TO_CAM = np.array(
      [0.0, 0.0, 0.0, 1.0]],
     dtype=np.float64,
 )
+
+# Left-camera mount offset in the vehicle frame (metres), matching the collector
+# spawn (scripts/collect_carla_data.py: CAM_MOUNT_X, -BASELINE_M/2, CAM_MOUNT_Z).
+# The camera carries no rotation relative to the vehicle. GT boxes and the inter-
+# agent transform are expressed in this LEFT-CAMERA optical frame so they line up
+# with the stereo predictions (triangulated from the left camera), not the
+# vehicle origin. Omitting it placed GT ~1.4 m too high and ~1.6 m too far.
+CAM_MOUNT = (1.6, -0.27, 1.4)
 
 # A GT car counts toward an agent's truth only if at least this many of its
 # pixels are actually visible to that agent (gt_boxes ``metrics_metadata``
@@ -239,10 +252,34 @@ def _world_from_agent(pose: dict) -> np.ndarray:
     )
 
 
+def _world_from_camera(pose: dict, mount: tuple = CAM_MOUNT) -> np.ndarray:
+    """Build the 4x4 world-from-left-camera transform from a CARLA pose.
+
+    The camera is rigidly mounted on the vehicle with no relative rotation, so
+    its world orientation equals the vehicle's and its world position is the
+    vehicle pose composed with the mount offset. This mirrors the camera world
+    transform the collector uses when computing visibility, so GT projected
+    through it lands where the stereo predictions (left-camera frame) do.
+
+    Args:
+        pose: Pose dict with x, y, z, roll, pitch, yaw (metres / degrees).
+        mount: Left-camera mount offset (x, y, z) in the vehicle frame.
+
+    Returns:
+        4x4 homogeneous transform mapping left-camera-frame points to world.
+    """
+    t_world_agent = _world_from_agent(pose)
+    t_world_cam = t_world_agent.copy()
+    t_world_cam[:, 3] = t_world_agent @ np.array([*mount, 1.0])
+    return t_world_cam
+
+
 def _inter_agent_transform(pose_a: dict, pose_b: dict) -> np.ndarray:
     """Compose T_b_to_a mapping agent B's camera frame into agent A's.
 
-    ``T_b_to_a = LIDAR_TO_CAM @ inv(T_world_a) @ T_world_b @ inv(LIDAR_TO_CAM)``.
+    ``T_b_to_a = LIDAR_TO_CAM @ inv(T_world_camA) @ T_world_camB @ inv(LIDAR_TO_CAM)``,
+    composed between the two LEFT-CAMERA frames (mount included) so it registers
+    camera-frame detections, not vehicle origins.
 
     Args:
         pose_a: Vehicle A world pose.
@@ -251,8 +288,8 @@ def _inter_agent_transform(pose_a: dict, pose_b: dict) -> np.ndarray:
     Returns:
         4x4 transform from B's camera frame to A's camera frame.
     """
-    t_world_a = _world_from_agent(pose_a)
-    t_world_b = _world_from_agent(pose_b)
+    t_world_a = _world_from_camera(pose_a)
+    t_world_b = _world_from_camera(pose_b)
     lidar_to_cam_inv = np.linalg.inv(LIDAR_TO_CAM)
     return LIDAR_TO_CAM @ np.linalg.inv(t_world_a) @ t_world_b @ lidar_to_cam_inv
 
@@ -260,11 +297,12 @@ def _inter_agent_transform(pose_a: dict, pose_b: dict) -> np.ndarray:
 def _world_box_to_camera(box_world: dict, pose: dict) -> dict:
     """Convert a world-frame GT box into an observing agent's camera frame.
 
-    Centre is mapped ``cam = LIDAR_TO_CAM @ inv(T_world_agent) @ world``; the
+    Centre is mapped ``cam = LIDAR_TO_CAM @ inv(T_world_camera) @ world``; the
     object size (l, w, h) is frame-independent and carried through; heading is
-    the relative yaw ``wrap_to_pi(radians(world_yaw - agent_yaw))``. Confidence
-    is 1.0 (ground truth) and ``actor_id`` is carried for the shared-vehicle
-    sanity check.
+    the relative yaw converted to KITTI ``rotation_y``
+    ``wrap_to_pi(radians(world_yaw - agent_yaw) - pi/2)`` (ry=0 ⇒ length along
+    camera X). Confidence is 1.0 (ground truth) and ``actor_id`` is carried for
+    the shared-vehicle sanity check.
 
     Args:
         box_world: World-frame GT box (label, actor_id, x, y, z, l, w, h, yaw).
@@ -274,10 +312,15 @@ def _world_box_to_camera(box_world: dict, pose: dict) -> dict:
         Camera-frame box dict (label, confidence, x, y, z, l, w, h, heading,
         actor_id).
     """
-    t_agent_from_world = np.linalg.inv(_world_from_agent(pose))
+    t_cam_from_world = np.linalg.inv(_world_from_camera(pose))
     p_world = np.array([box_world["x"], box_world["y"], box_world["z"], 1.0])
-    p_cam = LIDAR_TO_CAM @ t_agent_from_world @ p_world
-    heading = wrap_to_pi(math.radians(box_world["yaw"] - pose["yaw"]))
+    p_cam = LIDAR_TO_CAM @ t_cam_from_world @ p_world
+    # KITTI rotation_y convention: at ry=0 the object's LENGTH lies along the
+    # camera X axis (broadside); a car pointing along +Z (away from the camera)
+    # is ry=-pi/2. CARLA's relative yaw (world_yaw - agent_yaw) is 0 when the car
+    # points along +Z, so subtract pi/2 to convert. Without this the box's length
+    # was laid out laterally and the projected 2D box came out ~2x too wide.
+    heading = wrap_to_pi(math.radians(box_world["yaw"] - pose["yaw"]) - math.pi / 2)
     return {
         "label":      box_world["label"],
         "confidence": 1.0,
@@ -365,6 +408,38 @@ def project_box_to_2d(
     return box2d
 
 
+def label_box_2d(
+    label: dict,
+    P2: np.ndarray,
+    img_w: float,
+    img_h: float,
+) -> dict:
+    """Return the GT 2D box for a CARLA label, preferring the pixel-tight box.
+
+    If the label carries a pixel-tight 2D box (``x1,y1,x2,y2`` from the export's
+    segmentation-derived ``bbox_2d_v*``), return it directly — snug to the visible
+    car, the KITTI-style 2D-detection target. Otherwise fall back to
+    ``project_box_to_2d`` (the looser axis-aligned envelope of the projected 3D
+    box), so legacy exports without the tight box still render.
+
+    Args:
+        label: Camera-frame GT box/label dict (carries x, y, z, l, w, h,
+            rotation_y/heading, optionally x1, y1, x2, y2).
+        P2: 3x4 left-camera projection matrix (fallback only).
+        img_w: Image width in pixels.
+        img_h: Image height in pixels.
+
+    Returns:
+        Dict with x1, y1, x2, y2 and label (carried through if present).
+    """
+    if all(k in label for k in ("x1", "y1", "x2", "y2")):
+        box2d = {k: float(label[k]) for k in ("x1", "y1", "x2", "y2")}
+        if "label" in label:
+            box2d["label"] = label["label"]
+        return box2d
+    return project_box_to_2d(label, P2, img_w, img_h)
+
+
 # ---------------------------------------------------------------------------
 # Per-agent GT detections (visibility-filtered world boxes in camera frame)
 # ---------------------------------------------------------------------------
@@ -383,6 +458,58 @@ def _visibility_key(agent: str) -> str:
         The metadata key (e.g. 'visible_pixels_vA').
     """
     return f"visible_pixels_v{agent.split('_')[-1].upper()}"
+
+
+def _bbox_key(agent: str) -> str:
+    """Map an agent directory name to its gt_boxes pixel-tight 2D-box metadata key.
+
+    The export records each car's pixel-tight 2D box per agent role:
+    ``bbox_2d_vA`` for ``vehicle_a``, ``bbox_2d_vB`` for ``vehicle_b``.
+
+    Args:
+        agent: Agent directory name (e.g. 'vehicle_a').
+
+    Returns:
+        The metadata key (e.g. 'bbox_2d_vA').
+    """
+    return f"bbox_2d_v{agent.split('_')[-1].upper()}"
+
+
+def _split_ego_boxes(gt_world: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split a frame's world GT boxes into (non-ego, ego).
+
+    The export lists every ``vehicle.*`` actor, including both ego vehicles. An
+    ego is invisible to its own camera but fully visible to the *other* agent, so
+    it survives the per-agent visibility filter via the other agent and pollutes
+    the cooperative GT (one agent "detecting" the other's car inflated
+    b_unique_tp / a_unique_tp and biased recall). Non-ego boxes form the real
+    perceived-object GT; ego boxes are used as ignore regions when scoring
+    (an agent detecting the *other* ego is neither a TP nor an FP). Egos are
+    identified by the ``is_ego`` flag the collector writes per box.
+
+    Args:
+        gt_world: All vehicles' world-frame GT boxes at this frame.
+
+    Returns:
+        (non_ego, ego) — the GT boxes split by ego membership.
+    """
+    non_ego = [b for b in gt_world if not b.get("is_ego")]
+    ego = [b for b in gt_world if b.get("is_ego")]
+    return non_ego, ego
+
+
+def _drop_ego_boxes(gt_world: list[dict]) -> list[dict]:
+    """Return a frame's world GT boxes with the ego vehicles removed.
+
+    Thin wrapper over ``_split_ego_boxes`` (see it for the rationale).
+
+    Args:
+        gt_world: All vehicles' world-frame GT boxes at this frame.
+
+    Returns:
+        The GT boxes with ego vehicles removed.
+    """
+    return _split_ego_boxes(gt_world)[0]
 
 
 def _agent_gt_boxes(
@@ -422,13 +549,21 @@ def _agent_gt_boxes(
         return _agent_gt_boxes_geometric(gt_world, pose, calib, _DEFAULT_MAX_RANGE_M)
 
     key = _visibility_key(agent)
+    bkey = _bbox_key(agent)
     boxes: list[dict] = []
     for b in gt_world:
-        vis = int(b.get("metrics_metadata", {}).get(key, 0))
+        meta = b.get("metrics_metadata", {})
+        vis = int(meta.get(key, 0))
         if vis < min_visible_pixels:
             continue
         cam = _world_box_to_camera(b, pose)
         cam["visible_pixels"] = vis
+        # Pixel-tight 2D box of the visible car in this agent's view (KITTI-style,
+        # snug to the car). Carried through when the export provides it; consumers
+        # fall back to project_box_to_2d (3D-box envelope) when it's absent.
+        bbox = meta.get(bkey)
+        if bbox:
+            cam["x1"], cam["y1"], cam["x2"], cam["y2"] = (float(v) for v in bbox)
         boxes.append(cam)
     return boxes
 
@@ -601,7 +736,7 @@ def load_carla_pair(
 
     pose_a = _read_pose(scenario, agent_a, ts)
     pose_b = _read_pose(scenario, agent_b, ts)
-    gt_world = _read_gt_world(scenario, ts)
+    gt_world = _drop_ego_boxes(_read_gt_world(scenario, ts))
 
     calib_a = load_carla_calib(scenario_dir, agent_a)
     calib_b = load_carla_calib(scenario_dir, agent_b)
@@ -618,6 +753,39 @@ def load_carla_pair(
         scenario.name, ts, agent_a, len(boxes_a), agent_b, len(boxes_b),
     )
     return boxes_a, boxes_b, T_b_to_a, scene_id
+
+
+def load_carla_ego_boxes(
+    scenario_dir: str,
+    timestamp: str,
+    agent_a: str | None = None,
+    agent_b: str | None = None,
+) -> list[dict]:
+    """Load the two ego vehicles' boxes expressed in agent A's camera frame.
+
+    The egos are excluded from the cooperative GT (they are not perceived
+    objects — their poses are shared over V2V), but an agent's detector still
+    sees and detects the *other* ego. Returned here so the validator can treat
+    those detections as an ignore region (neither TP nor FP) rather than penalize
+    them as false positives. Boxes are in agent A's KITTI camera frame, matching
+    the frame all prediction sets are scored in.
+
+    Args:
+        scenario_dir: Path to one CARLA scenario folder.
+        timestamp: Timestamp string identifying the frame.
+        agent_a: Vehicle A agent ID. None → first agent in the scenario.
+        agent_b: Vehicle B agent ID. None → second agent in the scenario.
+
+    Returns:
+        List of ego box dicts (label, x, y, z, ...) in agent A's camera frame
+        (empty if the frame has no identifiable egos).
+    """
+    scenario = Path(scenario_dir)
+    ts = _normalize_ts(timestamp)
+    agent_a, _ = _resolve_agents(scenario, agent_a, agent_b)
+    pose_a = _read_pose(scenario, agent_a, ts)
+    _, ego_world = _split_ego_boxes(_read_gt_world(scenario, ts))
+    return [_world_box_to_camera(b, pose_a) for b in ego_world]
 
 
 def load_carla_calib(scenario_dir: str, agent: str) -> dict:
@@ -750,11 +918,12 @@ def load_carla_frame(
     ts = _normalize_ts(timestamp)
     calib = load_carla_calib(scenario_dir, agent)
     pose = _read_pose(Path(scenario_dir), agent, ts)
-    gt_world = _read_gt_world(Path(scenario_dir), ts)
+    gt_world = _drop_ego_boxes(_read_gt_world(Path(scenario_dir), ts))
 
     boxes = _agent_gt_boxes(gt_world, pose, calib, agent, min_visible_pixels)
-    labels = [
-        {
+    labels = []
+    for b in boxes:
+        lab = {
             "label":      b["label"],
             "x":          b["x"],
             "y":          b["y"],
@@ -765,8 +934,10 @@ def load_carla_frame(
             "rotation_y": b["heading"],
             "track_id":   b["actor_id"],
         }
-        for b in boxes
-    ]
+        # Carry the pixel-tight 2D box through when the export provides it.
+        if all(k in b for k in ("x1", "y1", "x2", "y2")):
+            lab.update({k: b[k] for k in ("x1", "y1", "x2", "y2")})
+        labels.append(lab)
     return {
         "agent":    agent,
         "frame_id": ts,
