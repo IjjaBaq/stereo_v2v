@@ -280,9 +280,17 @@ def validate_frame(
     b_unique_tp = unique_tp(coop_gt, fused_keys, scored["a_alone"]["matched_gt_keys"], "B")
     a_unique_tp = unique_tp(coop_gt, fused_keys, scored["b_alone"]["matched_gt_keys"], "A")
 
-    # BEV figure: coop GT vs A-alone vs fused.
-    fig_path = output_dir / f"{scene_id}_bev.png"
-    make_fusion_bev(coop_gt, a_pred, fused, scene_id, fig_path)
+    # BEV figures from BOTH perspectives (mirrors the symmetric metrics): each
+    # shows that ego's alone-vs-fused over the coop GT, highlighting the cars only
+    # the *other* agent saw — i.e. that ego's V2V gain. coop_gt and fused live in
+    # A's frame, so transform them into B's frame for B's plot (b_pred already is).
+    T_a_to_b = np.linalg.inv(T_b_to_a)
+    coop_gt_in_b = [transform_box(g, T_a_to_b) for g in coop_gt]
+    fused_in_b   = [transform_box(f, T_a_to_b) for f in fused]
+    make_fusion_bev(coop_gt, a_pred, fused, scene_id,
+                    output_dir / f"{scene_id}_bev_a.png", ego_label="A")
+    make_fusion_bev(coop_gt_in_b, b_pred, fused_in_b, scene_id,
+                    output_dir / f"{scene_id}_bev_b.png", ego_label="B")
 
     record = {
         "timestamp":   timestamp,

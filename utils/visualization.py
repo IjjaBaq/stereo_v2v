@@ -395,50 +395,64 @@ def make_2d_overlay_visualization(
 
 def make_fusion_bev(
     coop_gt: list[dict],
-    a_pred: list[dict],
+    ego_pred: list[dict],
     fused: list[dict],
     scene_id: str,
     output_path,
+    ego_label: str = "A",
 ) -> None:
-    """Render a BEV scatter (X vs Z) of coop GT, A-alone, and fused predictions.
+    """Render a BEV scatter (X vs Z) from one ego's perspective.
 
-    GT in orange ×, Vehicle-A-only GT highlighted; A-alone predictions in green
-    ○, fused predictions in cyan △. Position-only points (no footprints) since
-    Stage-3 emits centres.
+    All inputs must already be expressed in ``ego_label``'s camera frame. The plot
+    shows the ego's own (alone) predictions vs the fused predictions, over the
+    cooperative GT. The GT is split by ``seen_by``: cars the ego can see itself
+    (``seen_by`` ∈ {ego, "both"}) in orange, and cars only the *other* agent can
+    see (``seen_by`` == other) highlighted in magenta — the latter are exactly
+    what cooperation should let this ego recover, so a fused △ landing on a
+    magenta × with no green ○ nearby is the visual proof of V2V gain.
+
+    Position-only points (no footprints) since Stage-3 emits centres.
 
     Args:
-        coop_gt: Cooperative GT boxes (carry seen_by).
-        a_pred: Vehicle A's Stage-3 predictions (A's frame).
-        fused: Stage 4 fused boxes.
+        coop_gt: Cooperative GT boxes in the ego's frame (carry ``seen_by``).
+        ego_pred: This ego's own Stage-3 predictions (ego's frame).
+        fused: Stage 4 fused boxes in the ego's frame.
         scene_id: Scene identifier for the title.
         output_path: Path to save the PNG.
+        ego_label: Which agent's perspective this is ("A" or "B").
     """
-    if not (coop_gt or a_pred or fused):
+    if not (coop_gt or ego_pred or fused):
         logger.warning("No boxes for %s — skipping BEV.", scene_id)
         return
+
+    other_label = "B" if ego_label == "A" else "A"
 
     fig, ax = plt.subplots(figsize=(10, 12))
     ax.set_facecolor("#1a1a1a")
     fig.patch.set_facecolor("#1a1a1a")
 
     for g in coop_gt:
-        c = "#ffaa00" if g["seen_by"] == "B" else "#ff8800"
-        ax.scatter(g["x"], g["z"], c=c, marker="x", s=55, linewidths=1.5)
-    for p in a_pred:
+        if g["seen_by"] == other_label:                 # other-only: the gain
+            ax.scatter(g["x"], g["z"], c="#ff33cc", marker="x", s=80,
+                       linewidths=2.0)
+        else:                                            # ego sees it itself
+            ax.scatter(g["x"], g["z"], c="#ff8800", marker="x", s=55,
+                       linewidths=1.5)
+    for p in ego_pred:
         ax.scatter(p["x"], p["z"], facecolors="none", edgecolors="#00ff88",
                    marker="o", s=70, linewidths=1.3)
     for f in fused:
         ax.scatter(f["x"], f["z"], c="#33ccff", marker="^", s=40)
 
-    all_z = [b["z"] for b in coop_gt + a_pred + fused]
+    all_z = [b["z"] for b in coop_gt + ego_pred + fused]
     if all_z:
         ax.set_ylim(min(all_z) - 5, max(all_z) + 5)
 
     ax.legend(
         handles=[
-            mpatches.Patch(color="#ff8800", label="Coop GT (A or both)"),
-            mpatches.Patch(color="#ffaa00", label="Coop GT (B-only)"),
-            mpatches.Patch(color="#00ff88", label="A-alone pred"),
+            mpatches.Patch(color="#ff8800", label=f"Coop GT ({ego_label} or both)"),
+            mpatches.Patch(color="#ff33cc", label=f"Coop GT ({other_label}-only) — {ego_label}'s gain"),
+            mpatches.Patch(color="#00ff88", label=f"{ego_label}-alone pred"),
             mpatches.Patch(color="#33ccff", label="Fused pred"),
         ],
         loc="upper right", facecolor="#333333", labelcolor="white", fontsize=8,
@@ -446,7 +460,7 @@ def make_fusion_bev(
     ax.set_xlabel("X (metres)", color="white")
     ax.set_ylabel("Z — depth (metres)", color="white")
     ax.tick_params(colors="white")
-    ax.set_title(f"BEV — {scene_id}", color="white")
+    ax.set_title(f"BEV ({ego_label}'s frame) — {scene_id}", color="white")
     ax.set_aspect("equal")
     ax.grid(True, color="#333333", linewidth=0.5)
 

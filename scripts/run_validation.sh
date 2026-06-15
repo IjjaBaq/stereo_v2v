@@ -288,7 +288,7 @@ else
     for s in "${FAILED[@]}"; do echo "    [FAIL] $s"; done
 fi
 echo ""
-echo "  Results: outputs/{depth,detections,lift3d,fusion}/...  |  MLflow: ./mlruns"
+echo "  Results: outputs/{depth,detections,lift3d,fusion}/...  |  MLflow: sqlite:///mlflow.db"
 echo "=================================================================="
 
 [[ ${#FAILED[@]} -eq 0 ]] && exit 0 || exit 1

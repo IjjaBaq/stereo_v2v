@@ -37,7 +37,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.config_loader import load_configs
-from utils.fusion import build_coop_gt, fuse
+from utils.fusion import build_coop_gt, fuse, transform_box
 from utils.visualization import make_fusion_bev
 
 logger = logging.getLogger(__name__)
@@ -400,12 +400,20 @@ def run_carla(
     result = fuse_and_write(boxes_a, boxes_b, T_b_to_a, scene_id, meta,
                             output_dir, stage_cfg)
 
-    # Fusion BEV (KITTI-style scatter): cooperative GT vs A-alone vs fused. The
-    # GT path can build cooperative GT from the two agents' GT boxes; the
-    # detector path has no GT loaded here, so it shows A-alone vs fused only.
+    # Fusion BEV (KITTI-style scatter) from BOTH perspectives: each ego's
+    # alone-vs-fused over the coop GT, highlighting the cars only the other agent
+    # saw (that ego's V2V gain). The GT path builds cooperative GT from the two
+    # agents' GT boxes; the detector path has none loaded here, so it shows
+    # alone-vs-fused only. coop_gt and the fused boxes live in A's frame, so they
+    # are transformed into B's frame for B's plot (boxes_b already is).
     coop_gt = build_coop_gt(boxes_a, boxes_b, T_b_to_a) if use_gt else []
     make_fusion_bev(coop_gt, boxes_a, result["boxes"], scene_id,
-                    output_dir / f"{scene_id}_bev.png")
+                    output_dir / f"{scene_id}_bev_a.png", ego_label="A")
+    T_a_to_b = np.linalg.inv(T_b_to_a)
+    coop_gt_in_b = [transform_box(g, T_a_to_b) for g in coop_gt]
+    fused_in_b   = [transform_box(f, T_a_to_b) for f in result["boxes"]]
+    make_fusion_bev(coop_gt_in_b, boxes_b, fused_in_b, scene_id,
+                    output_dir / f"{scene_id}_bev_b.png", ego_label="B")
 
     if infer_s is not None:
         result["inference_time_s"] = round(infer_s, 3)
