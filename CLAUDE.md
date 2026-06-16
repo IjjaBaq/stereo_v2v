@@ -85,24 +85,23 @@
   end-to-end; the fusion core (`utils/fusion.py`) is complete and unit-tested.
   The validator scores cooperation **symmetrically** — both agents gain:
   `recall_improvement_a`/`b_unique_tp` (A's gain from B) and
-  `recall_improvement_b`/`a_unique_tp` (B's gain from A). Latest SGBM run (5
-  frames: 50/100/150/200/250, ego-excluded coop-GT = 3 distinct cars / 15
-  instances) shows A recall
-  0.80→fused 1.00 (+0.20, 3 B-unique TPs) and B recall 0.47→1.00 (+0.53, 4
-  A-unique TPs); BEV loc-error A 0.82 m / B 0.92 m → fused 0.75 m. See
-  VALIDATION_SUMMARY.md. (These supersede the pre-ego-exclusion numbers — the
-  earlier b_unique_tp=6 was inflated by Vehicle A's own car appearing in B's GT.)
+  `recall_improvement_b`/`a_unique_tp` (B's gain from A). Latest SGBM run (**150
+  frames**, leader–follower pair, ego-excluded coop-GT = 9 distinct cars / 586
+  instances): A recall 0.66→fused 0.77 (+0.11, 40 B-unique TPs) and B recall
+  0.32→0.77 (+0.44, 185 A-unique TPs); **loc-error ~flat** A 0.78 / B 0.82 →
+  fused 0.76 m. The headline gain is **coverage, not localization** — the two
+  agents view shared cars at ~12° separation, so triangulation is unavailable
+  (`corroboration_rate` ≈ 0.26: 72 merges of 274 co-observed cars). SGBM >> WAFT
+  (WAFT dense → FP-heavy, ~0 merges). The validator also emits a PR-sweep curve
+  and a loc-error-vs-range plot. See VALIDATION_SUMMARY.md / REPORT.md §2.
 
-## Temporary code
-- **Proximity-based ego exclusion** (`utils/carla_loader.py`, `_drop_ego_boxes`).
-  The current `data/carla` export lists every `vehicle.*` actor in `gt_boxes`,
-  including the two ego vehicles. An ego is invisible to its own camera but
-  fully visible to the other agent, so it survives the per-agent visibility
-  filter via the other agent and pollutes the cooperative GT (one agent
-  "detecting" the other's car inflates `b_unique_tp`/`a_unique_tp` and biases
-  recall). As an interim fix the loader drops any GT box whose world (x, y) is
-  within `_SELF_EXCLUDE_M` (2 m) of an agent pose. The collector now also tags
-  the egos `is_ego: true` (`scripts/collect_carla_data.py`), and
-  `_drop_ego_boxes` honors that flag first — so **after a re-collection the
-  `is_ego` tag takes over automatically and the proximity block (marked
-  `# TEMPORARY:` … `# END TEMPORARY`) can be deleted with no behavior change.**
+## Ego handling (is_ego, live)
+- The collector tags both ego vehicles `is_ego: true` and the `data/carla`
+  export carries it. `utils/carla_loader._split_ego_boxes` drops ego boxes from
+  the cooperative GT by that flag; `load_carla_ego_boxes` returns them so the
+  Stage-4 validator can treat an agent's detection of the *other* ego as an
+  ignore region (neither TP nor FP). `make_fusion_bev` likewise hides ego
+  detections from the BEV (same ignore logic) so the figure matches the metrics;
+  genuine FPs are kept (and coloured red). The geometric `_SELF_EXCLUDE_M`
+  proximity gate now survives **only** as a legacy fallback inside
+  `_agent_gt_boxes_geometric`, used when an export has no `metrics_metadata`.

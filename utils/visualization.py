@@ -400,6 +400,8 @@ def make_fusion_bev(
     scene_id: str,
     output_path,
     ego_label: str = "A",
+    ego_boxes: list[dict] | None = None,
+    max_dist: dict | None = None,
 ) -> None:
     """Render a BEV scatter (X vs Z) from one ego's perspective.
 
@@ -411,6 +413,14 @@ def make_fusion_bev(
     what cooperation should let this ego recover, so a fused △ landing on a
     magenta × with no green ○ nearby is the visual proof of V2V gain.
 
+    Ego vehicles are *not* perceived targets (their poses are shared over V2V), so
+    they are excluded from the cooperative GT and treated as ignore regions when
+    scoring. To keep the figure consistent with the metrics, any ego/own or fused
+    prediction that matches an ``ego_boxes`` entry (same class, within ``max_dist``)
+    is dropped from the plot. Genuine false positives are *kept* — and drawn in a
+    distinct colour — because they are real errors the precision metric counts;
+    hiding them would misrepresent the result.
+
     Position-only points (no footprints) since Stage-3 emits centres.
 
     Args:
@@ -420,12 +430,42 @@ def make_fusion_bev(
         scene_id: Scene identifier for the title.
         output_path: Path to save the PNG.
         ego_label: Which agent's perspective this is ("A" or "B").
+        ego_boxes: Ego-vehicle boxes in the ego's frame, used to drop ego
+            detections from the plot (mirrors the scoring ignore regions).
+        max_dist: Per-class BEV match threshold (same as scoring); required for
+            the ego drop and the TP/FP split of fused boxes.
     """
     if not (coop_gt or ego_pred or fused):
         logger.warning("No boxes for %s — skipping BEV.", scene_id)
         return
 
     other_label = "B" if ego_label == "A" else "A"
+
+    # Drop ego detections so the figure matches the metrics (ego = ignore region).
+    # Genuine false positives are NOT dropped (see docstring).
+    ego_boxes = ego_boxes or []
+    md = max_dist or {}
+
+    def _is_ego(b: dict) -> bool:
+        thr = float(md.get(b["label"], 0.0))
+        return any(
+            e["label"] == b["label"]
+            and np.hypot(b["x"] - e["x"], b["z"] - e["z"]) <= thr
+            for e in ego_boxes
+        )
+
+    n_ego_hidden = sum(_is_ego(b) for b in fused)
+    ego_pred = [p for p in ego_pred if not _is_ego(p)]
+    fused = [f for f in fused if not _is_ego(f)]
+
+    # Split fused into matched (TP, on a coop-GT car) vs unmatched (FP), so the
+    # viewer can see at a glance why the fused count may exceed the car count.
+    from utils.fusion import match_boxes
+
+    fused_matches, fused_fp_idx, _ = match_boxes(fused, coop_gt, md)
+    tp_idx = {i for i, _ in fused_matches}
+    fused_tp = [fused[i] for i in range(len(fused)) if i in tp_idx]
+    fused_fp = [fused[i] for i in fused_fp_idx]
 
     fig, ax = plt.subplots(figsize=(10, 12))
     ax.set_facecolor("#1a1a1a")
@@ -441,8 +481,11 @@ def make_fusion_bev(
     for p in ego_pred:
         ax.scatter(p["x"], p["z"], facecolors="none", edgecolors="#00ff88",
                    marker="o", s=70, linewidths=1.3)
-    for f in fused:
+    for f in fused_tp:
         ax.scatter(f["x"], f["z"], c="#33ccff", marker="^", s=40)
+    for f in fused_fp:
+        ax.scatter(f["x"], f["z"], facecolors="none", edgecolors="#ff4444",
+                   marker="^", s=55, linewidths=1.5)
 
     all_z = [b["z"] for b in coop_gt + ego_pred + fused]
     if all_z:
@@ -453,14 +496,20 @@ def make_fusion_bev(
             mpatches.Patch(color="#ff8800", label=f"Coop GT ({ego_label} or both)"),
             mpatches.Patch(color="#ff33cc", label=f"Coop GT ({other_label}-only) — {ego_label}'s gain"),
             mpatches.Patch(color="#00ff88", label=f"{ego_label}-alone pred"),
-            mpatches.Patch(color="#33ccff", label="Fused pred"),
+            mpatches.Patch(color="#33ccff", label="Fused — matched (TP)"),
+            mpatches.Patch(color="#ff4444", label="Fused — false positive"),
         ],
         loc="upper right", facecolor="#333333", labelcolor="white", fontsize=8,
     )
     ax.set_xlabel("X (metres)", color="white")
     ax.set_ylabel("Z — depth (metres)", color="white")
     ax.tick_params(colors="white")
-    ax.set_title(f"BEV ({ego_label}'s frame) — {scene_id}", color="white")
+    title = (f"BEV ({ego_label}'s frame) — {scene_id}\n"
+             f"GT cars: {len(coop_gt)} | fused: {len(fused)} "
+             f"({len(fused_tp)} TP, {len(fused_fp)} FP)")
+    if n_ego_hidden:
+        title += f" | {n_ego_hidden} ego det. hidden"
+    ax.set_title(title, color="white", fontsize=9)
     ax.set_aspect("equal")
     ax.grid(True, color="#333333", linewidth=0.5)
 
@@ -469,3 +518,94 @@ def make_fusion_bev(
                 facecolor=fig.get_facecolor())
     plt.close()
     logger.info("Saved BEV → %s", output_path)
+
+
+_METHOD_STYLE = {
+    "a_alone": ("#00ff88", "A-alone"),
+    "b_alone": ("#ffaa00", "B-alone"),
+    "fused":   ("#33ccff", "Fused"),
+}
+
+
+def make_range_error_plot(depth_breakdown: dict, output_path, method: str) -> None:
+    """Plot BEV localization error vs GT range, per prediction set.
+
+    Visualizes the range-dependent localization claim: how mean BEV error grows
+    with target distance for A-alone, B-alone and Fused. Bins with no matched
+    pairs are skipped (their ``loc_error`` is None).
+
+    Args:
+        depth_breakdown: ``summary['depth_range_breakdown']`` — {bin: {method:
+            {n, loc_error}}}.
+        output_path: Path to save the PNG.
+        method: Depth method label for the title (sgbm | waft).
+    """
+    bins = list(depth_breakdown.keys())
+    x = list(range(len(bins)))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.set_facecolor("#1a1a1a")
+    fig.patch.set_facecolor("#1a1a1a")
+
+    for m, (color, lab) in _METHOD_STYLE.items():
+        ys, xs = [], []
+        for i, b in enumerate(bins):
+            v = depth_breakdown[b].get(m, {}).get("loc_error")
+            if v is not None:
+                xs.append(i)
+                ys.append(v)
+        if xs:
+            ax.plot(xs, ys, "-o", color=color, label=lab, linewidth=1.8, markersize=6)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([b.replace("_", "–").replace("plus", "+") for b in bins],
+                       color="white")
+    ax.set_xlabel("GT range bin", color="white")
+    ax.set_ylabel("Mean BEV localization error (m)", color="white")
+    ax.set_title(f"Localization error vs range — {method}", color="white")
+    ax.tick_params(colors="white")
+    ax.grid(True, color="#333333", linewidth=0.5)
+    ax.legend(facecolor="#333333", labelcolor="white", fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    plt.close()
+    logger.info("Saved range-error plot → %s", output_path)
+
+
+def make_pr_curve(pr_by_method: dict, output_path, method: str) -> None:
+    """Plot a precision–recall curve per prediction set from a threshold sweep.
+
+    Shows how fusion moves the precision/recall operating point relative to each
+    single agent, as the confidence threshold varies.
+
+    Args:
+        pr_by_method: {method: [{threshold, recall, precision, ...}, ...]}.
+        output_path: Path to save the PNG.
+        method: Depth method label for the title (sgbm | waft).
+    """
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_facecolor("#1a1a1a")
+    fig.patch.set_facecolor("#1a1a1a")
+
+    for m, (color, lab) in _METHOD_STYLE.items():
+        pts = [p for p in pr_by_method.get(m, [])
+               if p["recall"] == p["recall"] and p["precision"] == p["precision"]]
+        if pts:
+            ax.plot([p["recall"] for p in pts], [p["precision"] for p in pts],
+                    "-o", color=color, label=lab, linewidth=1.6, markersize=5)
+
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.set_xlabel("Recall", color="white")
+    ax.set_ylabel("Precision", color="white")
+    ax.set_title(f"Precision–Recall (confidence sweep) — {method}", color="white")
+    ax.tick_params(colors="white")
+    ax.grid(True, color="#333333", linewidth=0.5)
+    ax.legend(facecolor="#333333", labelcolor="white", fontsize=9, loc="lower left")
+
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    plt.close()
+    logger.info("Saved PR curve → %s", output_path)

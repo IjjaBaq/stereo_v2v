@@ -74,7 +74,7 @@ from utils.fusion import (
     transform_box,
 )
 from utils.validation_io import merge_samples
-from utils.visualization import make_fusion_bev
+from utils.visualization import make_fusion_bev, make_pr_curve, make_range_error_plot
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,39 @@ DEPTH_BINS = (
     ("20_40m",  20.0,  40.0),
     ("40m_plus", 40.0, float("inf")),
 )
+
+# Confidence thresholds for the precision–recall sweep (how fusion moves the
+# operating point as the minimum confidence is raised).
+PR_THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 … 0.90
+
+
+def score_pr_sweep(
+    preds: list[dict],
+    coop_gt: list[dict],
+    max_dist: dict,
+    ego_boxes: list[dict] | None,
+) -> list[list]:
+    """Re-score one prediction set against coop GT at each PR threshold.
+
+    Filters predictions by ``confidence >= threshold`` and re-runs the same
+    greedy matching used for the headline metrics, so the resulting PR points are
+    consistent with ``score_against_gt`` (ego detections still ignored).
+
+    Args:
+        preds: Predicted boxes in A's frame (carry ``confidence``).
+        coop_gt: Cooperative GT boxes in A's frame.
+        max_dist: Per-class BEV match threshold.
+        ego_boxes: Ego boxes treated as ignore regions.
+
+    Returns:
+        List of ``[threshold, n_tp, n_fp, n_fn]`` rows, one per PR threshold.
+    """
+    rows = []
+    for thr in PR_THRESHOLDS:
+        kept = [p for p in preds if float(p.get("confidence", 1.0)) >= thr]
+        s = score_against_gt(kept, coop_gt, max_dist, ignore_boxes=ego_boxes)
+        rows.append([thr, s["n_tp"], s["n_fp"], s["n_fn"]])
+    return rows
 
 
 # Cooperative ground truth (build_coop_gt) lives in utils.fusion so the run path
@@ -287,10 +320,13 @@ def validate_frame(
     T_a_to_b = np.linalg.inv(T_b_to_a)
     coop_gt_in_b = [transform_box(g, T_a_to_b) for g in coop_gt]
     fused_in_b   = [transform_box(f, T_a_to_b) for f in fused]
+    ego_in_b     = [transform_box(e, T_a_to_b) for e in ego_boxes]
     make_fusion_bev(coop_gt, a_pred, fused, scene_id,
-                    output_dir / f"{scene_id}_bev_a.png", ego_label="A")
+                    output_dir / f"{scene_id}_bev_a.png", ego_label="A",
+                    ego_boxes=ego_boxes, max_dist=max_dist)
     make_fusion_bev(coop_gt_in_b, b_pred, fused_in_b, scene_id,
-                    output_dir / f"{scene_id}_bev_b.png", ego_label="B")
+                    output_dir / f"{scene_id}_bev_b.png", ego_label="B",
+                    ego_boxes=ego_in_b, max_dist=max_dist)
 
     record = {
         "timestamp":   timestamp,
@@ -300,10 +336,16 @@ def validate_frame(
         # of DISTINCT vehicles, not just the per-frame instance sum (the same few
         # cars recur across frames).
         "coop_gt_ids": [g.get("actor_id") for g in coop_gt],
+        # Cars BOTH agents see (seen_by == "both"): the denominator for the
+        # corroboration rate (how many co-observed cars fusion actually merged).
+        "n_co_observed": sum(1 for g in coop_gt if g.get("seen_by") == "both"),
         "a_unique_tp": a_unique_tp,
         "b_unique_tp": b_unique_tp,
         "inference_time_s": round(t_a + t_b, 3),
         "fuse_stats":  fuse_stats,
+        # Per-method confidence sweep for the pooled precision–recall curve.
+        "pr_sweep": {m: score_pr_sweep(p, coop_gt, max_dist, ego_boxes)
+                     for m, p in pred_sets.items()},
         "methods": {
             m: {k: v for k, v in scored[m].items() if k != "matched_gt_keys"}
             for m in METHODS
@@ -424,7 +466,7 @@ def main() -> None:
                                id_key="timestamp", list_key="frames")
         valid = [r for r in merged if "error" not in r and "methods" in r]
 
-        summary = _build_summary(valid, classes, scene, args.method)
+        summary = _build_summary(valid, classes, scene, args.method, output_dir)
         summary["frames"] = merged
         with open(results_path, "w") as f:
             json.dump(summary, f, indent=2)
@@ -436,6 +478,7 @@ def _build_summary(
     classes: tuple[str, ...],
     scene: str,
     method: str,
+    output_dir: Path | None = None,
 ) -> dict:
     """Aggregate per-method metrics + breakdowns over all valid frames, log MLflow."""
     summary: dict = {"scenario": scene, "method": method, "n_frames": len(valid)}
@@ -529,6 +572,55 @@ def _build_summary(
                 "loc_error": float(np.mean(errs)) if errs else None,
             }
     summary["depth_range_breakdown"] = depth_breakdown
+    for name, _, _ in DEPTH_BINS:
+        for m in METHODS:
+            v = depth_breakdown[name][m]["loc_error"]
+            if v is not None and not math.isnan(v):
+                mlflow.log_metric(f"loc_error_{name}_{m}", v)
+
+    # Corroboration rate — of the cars BOTH agents see, how many did fusion
+    # actually merge into one box (vs leave as two unmatched boxes). This is the
+    # direct evidence that fusion corroborates rather than merely unions.
+    n_co_observed = sum(r.get("n_co_observed", 0) for r in valid)
+    n_merges = sum(r["fuse_stats"]["n_fused"] for r in valid)
+    summary["n_co_observed"] = n_co_observed
+    summary["n_fused_merges"] = n_merges
+    summary["corroboration_rate"] = (n_merges / n_co_observed
+                                     if n_co_observed else None)
+    mlflow.log_metric("n_co_observed", n_co_observed)
+    mlflow.log_metric("n_fused_merges", n_merges)
+    if summary["corroboration_rate"] is not None:
+        mlflow.log_metric("corroboration_rate", summary["corroboration_rate"])
+
+    # Precision–recall sweep — pool the per-frame TP/FP/FN at each threshold.
+    pr_by_method: dict = {}
+    for m in METHODS:
+        agg: dict = {}
+        for r in valid:
+            for thr, tp, fp, fn in r.get("pr_sweep", {}).get(m, []):
+                a = agg.setdefault(thr, [0, 0, 0])
+                a[0] += tp; a[1] += fp; a[2] += fn
+        pts = []
+        for thr in sorted(agg):
+            tp, fp, fn = agg[thr]
+            pts.append({
+                "threshold": thr,
+                "recall":    tp / (tp + fn) if (tp + fn) else float("nan"),
+                "precision": tp / (tp + fp) if (tp + fp) else float("nan"),
+                "n_tp": tp, "n_fp": fp, "n_fn": fn,
+            })
+        pr_by_method[m] = pts
+    summary["pr_sweep"] = pr_by_method
+
+    # Figures (range-error + PR curve) saved beside the JSON and logged to MLflow.
+    if output_dir is not None:
+        range_png = Path(output_dir) / f"loc_error_vs_range_{method}.png"
+        pr_png = Path(output_dir) / f"pr_curve_{method}.png"
+        make_range_error_plot(depth_breakdown, range_png, method)
+        make_pr_curve(pr_by_method, pr_png, method)
+        for p in (range_png, pr_png):
+            if p.exists():
+                mlflow.log_artifact(str(p))
 
     logger.info(
         "=== Stage 4 Summary [%s %s] === coop-GT %d distinct / %d instances | "

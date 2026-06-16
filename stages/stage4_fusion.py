@@ -338,7 +338,11 @@ def run_carla(
     Raises:
         ValueError: On the detector path if stage configs or the model are missing.
     """
-    from utils.carla_loader import load_carla_pair, load_carla_transform
+    from utils.carla_loader import (
+        load_carla_ego_boxes,
+        load_carla_pair,
+        load_carla_transform,
+    )
 
     carla_cfg = stage_cfg.get("carla", {})
     agent_a = agent_a if agent_a is not None else carla_cfg.get("agent_a")
@@ -407,13 +411,21 @@ def run_carla(
     # alone-vs-fused only. coop_gt and the fused boxes live in A's frame, so they
     # are transformed into B's frame for B's plot (boxes_b already is).
     coop_gt = build_coop_gt(boxes_a, boxes_b, T_b_to_a) if use_gt else []
+    # Ego boxes (in A's frame) so the BEV can drop ego detections, matching the
+    # validator's ignore-region scoring. Pose-based, so available on both paths.
+    ego_boxes = load_carla_ego_boxes(
+        scenario_dir, timestamp, agent_a=agent_a, agent_b=agent_b)
+    max_dist = stage_cfg["matching"]["max_dist"]
     make_fusion_bev(coop_gt, boxes_a, result["boxes"], scene_id,
-                    output_dir / f"{scene_id}_bev_a.png", ego_label="A")
+                    output_dir / f"{scene_id}_bev_a.png", ego_label="A",
+                    ego_boxes=ego_boxes, max_dist=max_dist)
     T_a_to_b = np.linalg.inv(T_b_to_a)
     coop_gt_in_b = [transform_box(g, T_a_to_b) for g in coop_gt]
     fused_in_b   = [transform_box(f, T_a_to_b) for f in result["boxes"]]
+    ego_in_b     = [transform_box(e, T_a_to_b) for e in ego_boxes]
     make_fusion_bev(coop_gt_in_b, boxes_b, fused_in_b, scene_id,
-                    output_dir / f"{scene_id}_bev_b.png", ego_label="B")
+                    output_dir / f"{scene_id}_bev_b.png", ego_label="B",
+                    ego_boxes=ego_in_b, max_dist=max_dist)
 
     if infer_s is not None:
         result["inference_time_s"] = round(infer_s, 3)

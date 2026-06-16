@@ -1,9 +1,10 @@
 # Validation Summary
 
 Validated results from the end-to-end pipeline. Stages 1–3 are from the
-regeneration on **2026-06-06**; **Stage 4 (V2V fusion) was re-run on 2026-06-12**
-after the CARLA pipeline fixes (camera-mount extrinsic, validator/visualization
-fixes). Numbers below are taken verbatim from the per-stage
+regeneration on **2026-06-06**; **Stage 4 (V2V fusion) is the 150-frame CARLA run
+(2026-06-16)** with the ego-from-BEV fix, the corroboration-rate metric, and the
+PR-sweep / loc-error-vs-range figures. Numbers below are taken verbatim from the
+per-stage
 `validation_results.json` files — nothing was recalculated.
 
 Seeds fixed at every entry point (`random`, `numpy`, `torch` = 42).
@@ -166,126 +167,87 @@ FP-heavy sequences.
 
 ---
 
-## Stage 4 — V2V Cooperative Fusion (CARLA, 5 frames)
+## Stage 4 — V2V Cooperative Fusion (CARLA, 150 frames)
 
-Source: `outputs/fusion/carla/{sgbm,waft}/validation_results.json` (run 2026-06-13,
-`--scenario data/carla`, frames `000050/000100/000150/000200/000250`, the
-default FOV-overlap set). Scenario: Town10HD intersection, two moving ego vehicles.
-This run includes the 2026-06-12 fixes (most importantly the **camera-mount
-extrinsic** fix — GT in each agent's left-camera frame, not the vehicle origin)
-**plus the 2026-06-13 ego-exclusion fix**: the export listed both ego vehicles in
-`gt_boxes`, and since an ego is invisible to its own camera but visible to the
-other agent it leaked into the cooperative GT (one agent "detecting" the other's
-car). Excluding the egos drops the coop-GT from 19 to **15 instances** and removes
-the inflated unique-TP counts (e.g. SGBM `b_unique_tp` 6 → 3).
-
-> **Note on counts.** "coop-GT objects" below are **per-frame instances summed
-> over the 5 frames**, not distinct vehicles. Only **3 distinct cars** (actors
-> 121, 124, 125) appear across these frames — 3 per frame × 5 = 15 instances. The
-> validation JSON reports both as `n_coop_gt_distinct` (3) and
-> `n_coop_gt_instances` (15). The scene has 29 vehicle actors but only 3–4 per
-> frame pass the visibility filter; the rest are out of FOV / too far / occluded.
+Source: `outputs/fusion/carla/{sgbm,waft}/validation_results.json`
+(`--scenario data/carla`, 150 frames). Scenario: Town10HD intersection, two moving
+ego vehicles forming a **leader–follower** pair — A is close to the shared cars
+(median ~11 m), B is ~3.3× further behind (median ~36 m). Egos are tagged `is_ego`
+and excluded from coop-GT; an agent's detection of the *other* ego is an ignore
+region (neither TP nor FP). Coop-GT = **9 distinct cars** / **586 instances**
+(`n_coop_gt_distinct` / `n_coop_gt_instances`).
 
 Each frame compares three prediction sets — **A-alone**, **B-alone** (B's Stages
 1–3 output registered into A's frame), **Fused** — against a **cooperative GT**:
-every (non-ego) vehicle visible to A *or* B, deduplicated by `actor_id` (A-visible
-instance wins). Matching is greedy BEV (x-z) centre distance per class,
-`matching.max_dist` from `config/stage4.yaml` (Car ≤ 2.0 m; Car-only pipeline).
-All 15 coop-GT instances (3 distinct cars × 5 frames) are Cars.
+every (non-ego) vehicle visible to A *or* B, deduplicated by `actor_id`. Matching
+is greedy BEV (x-z) centre distance per class, `matching.max_dist` (Car ≤ 2.0 m).
 
-Cooperation is **mutual** — the fused output is shared, so both agents benefit and
-both gains are measured against the same cooperative GT: **A's gain from B**
-(fused vs A-alone; `b_unique_tp` = GT only B saw) and **B's gain from A** (fused vs
-B-alone; `a_unique_tp` = GT only A saw).
+Cooperation is **mutual** — the fused output is shared, so both gains are measured
+against the same coop-GT: **A's gain from B** (`b_unique_tp` = GT only B saw) and
+**B's gain from A** (`a_unique_tp` = GT only A saw).
 
 ### Headline — recall per set
-| Method | Recall A-alone | Recall B-alone | **Recall Fused** | Mean infer (s/frame) |
-|--------|:--------------:|:--------------:|:----------------:|:--------------------:|
-| **SGBM** | 0.8000 | 0.4667 | **1.0000** | 6.81 |
-| WAFT | 0.3333 | 0.2000 | **0.5333** | 150.8 |
+| Method | Recall A-alone | Recall B-alone | **Recall Fused** |
+|--------|:--------------:|:--------------:|:----------------:|
+| **SGBM** | 0.66 | 0.32 | **0.77** |
+| WAFT | 0.11 | 0.21 | **0.31** |
 
-The fused set is shared, so `Recall Fused` is the common target both agents reach.
-SGBM fusion recovers **all 15** coop-GT cars (recall 1.00, 0 FN) from single-agent
-recalls of 0.80 / 0.47 — each agent recovers cars only the other saw.
+The big result is **coverage**: the follower's recall rises **0.32 → 0.77**,
+recovering **185** cars it could not perceive alone; the leader gains +0.11.
 
-### Symmetric V2V gains — both agents benefit
-| Perspective | Baseline | Δ recall | Δ precision | Δ loc-err (m) ↓ | Unique TPs recovered |
-|-------------|----------|:--------:|:-----------:|:---------------:|:--------------------:|
-| **SGBM — A gains from B** | A-alone | **+0.2000** | −0.0682 | +0.0600 | **3** (`b_unique_tp`) |
-| **SGBM — B gains from A** | B-alone | **+0.5333** | −0.1932 | +0.1640 | **4** (`a_unique_tp`) |
-| **WAFT — A gains from B** | A-alone | **+0.2000** | −0.0278 | −0.0769 | **3** (`b_unique_tp`) |
-| **WAFT — B gains from A** | B-alone | **+0.3333** | +0.0357 | +0.1287 | **2** (`a_unique_tp`) |
+### Cooperative gains (SGBM, fused vs each single-agent baseline)
+| Perspective | Δ recall | Δ loc-err (m) ↓ | Unique TPs recovered |
+|-------------|:--------:|:---------------:|:--------------------:|
+| **A gains from B** | **+0.11** | +0.02 | **40** (`b_unique_tp`) |
+| **B gains from A** | **+0.44** | +0.06 | **185** (`a_unique_tp`) |
 
-Δ recall / Δ precision = fused minus that agent's single-agent baseline; Δ loc-err
-= baseline loc-err minus fused (positive = fusion tightens localization). Both
-agents gain recall; the precision dip is each agent absorbing the *other's* genuine
-false positives (the fused set pools both), and localization tightens in 3 of the 4
-perspectives. Both `a_unique_tp` and `b_unique_tp` are captured.
+**Localization is essentially flat** (see per-method table). A diagnostic over the
+150 frames shows the two agents view shared cars at a **median ~12° angular
+separation** (never > 20°): their depth-uncertainty axes are near-parallel, so
+cross-view triangulation — the mechanism that would tighten depth — is largely
+unavailable. The **corroboration rate** is **0.26** (72 merges of 274 co-observed
+cars): most co-observed cars are not actually merged (one agent misses, or the two
+detections fall > 2 m apart), so the fused scene is closer to a union than a
+deduplicated set. This is a clean, quantified **operating limit**, not a bug.
 
-**Ego detections are an ignore region.** Each agent's detector still detects the
-*other ego* (e.g. B sees A ahead). The egos are not coop-GT targets (their poses
-are shared over V2V), so such detections are scored as **ignored — neither TP nor
-FP** (KITTI `DontCare` semantics), counted as `n_ignored` rather than penalizing
-precision. This lifts B-alone precision from 0.636 to **0.875** (SGBM: 3 ego-A
-detections ignored) without touching recall or FN.
+### Full per-method breakdown (TP / FP / FN · precision · BEV loc-err)
+| Method | Set | TP | FP | FN | Precision | Loc-err (m) ↓ |
+|--------|-----|:--:|:--:|:--:|:---------:|:-------------:|
+| SGBM | A-alone | 384 | 6 | 202 | 0.985 | 0.785 |
+| SGBM | B-alone | 190 | 63 | 396 | 0.751 | 0.819 |
+| SGBM | **Fused** | 449 | 122 | 137 | 0.786 | 0.763 |
+| WAFT | A-alone | 63 | 330 | 523 | 0.160 | 1.091 |
+| WAFT | B-alone | 122 | 174 | 464 | 0.412 | 0.900 |
+| WAFT | **Fused** | 184 | 504 | 402 | 0.267 | 0.962 |
 
-### Full per-method breakdown (TP / FP / FN · ignored · precision · BEV loc-err)
-| Method | Set | TP | FP | FN | Ign | Precision | Loc-err (m) ↓ |
-|--------|-----|:--:|:--:|:--:|:---:|:---------:|:-------------:|
-| SGBM | A-alone | 12 | 4 | 3 | 0 | 0.750 | 0.815 |
-| SGBM | B-alone | 7 | 1 | 8 | 3 | 0.875 | 0.919 |
-| SGBM | **Fused** | 15 | 7 | 0 | 3 | 0.682 | 0.755 |
-| WAFT | A-alone | 5 | 13 | 10 | 0 | 0.278 | 0.678 |
-| WAFT | B-alone | 3 | 11 | 12 | 2 | 0.214 | 0.884 |
-| WAFT | **Fused** | 8 | 24 | 7 | 2 | 0.250 | 0.755 |
+The precision/recall trade-off of late fusion: A-alone is very precise (0.985) but
+limited in reach; fusion unions in B's detections (and B's FPs), so fused precision
+settles at 0.786. The **PR sweep** (`pr_curve_{method}.png`) traces this — the
+fused curve reaches recall (~0.74) neither agent attains alone, and trades up to
+precision ~0.95 at lower recall.
 
-"Ign" = ego detections ignored (not counted TP/FP). A-alone has 0 (A can't see its
-own ego and detects no NPC at an ego's location); B-alone has 3 (B detects ego-A).
+### GT-depth-range breakdown (fused TP count · loc-err m) — SGBM
+Localization error grows with range (the central Ch1 claim); fusion is at or below
+both agents at 10–20 m. Plotted in `loc_error_vs_range_sgbm.png`.
 
-- A's gain: `recall_improvement_a` = +0.2000 (SGBM) / +0.2000 (WAFT);
-  `loc_error_improvement_a` = +0.060 m / −0.077 m.
-- B's gain: `recall_improvement_b` = +0.5333 (SGBM) / +0.3333 (WAFT);
-  `loc_error_improvement_b` = +0.164 m / +0.129 m.
-- Fusion improves recall for **both** agents. Fused precision (SGBM 0.68) reflects
-  the genuine false positives each agent contributes to the shared set; the
-  other-ego detections no longer count against it.
+| Range | A-alone | B-alone | Fused |
+|-------|:-------:|:-------:|:-----:|
+| 0–10 m  | 0.67 (94) | 0.51 (41) | 0.57 (94) |
+| 10–20 m | 0.81 (246) | 0.82 (84) | 0.75 (246) |
+| 20–40 m | 0.87 (44) | 0.97 (29) | 0.91 (73) |
 
-### Per-class (Car · TP/FP/FN — fused)
-Coop-GT is non-ego vehicles only and the pipeline is **Car-only** (Pedestrian
-dropped 2026-06-10), so **Car** is the entire signal; fused FPs are genuine car
-mis/duplicate detections (the other-ego detections are ignored, not FPs), not
-pedestrian hallucinations.
+### Why SGBM beats WAFT
+WAFT's dense depth lifts *every* detection → far more FPs (fused precision 0.27)
+and it essentially never corroborates (**1 merge in 150 frames**), whereas SGBM's
+sparse, consistency-checked depth filters weak detections (fused recall 0.77 vs
+0.31). SGBM is also far faster on CPU. **SGBM is the method to cite for Stage 4.**
 
-| Method | Car fused TP | Car fused FP | Car fused FN | Car loc-err (m) |
-|--------|:------------:|:------------:|:------------:|:---------------:|
-| SGBM | 15 | 7 | 0 | 0.755 |
-| WAFT | 8 | 24 | 7 | 0.755 |
-
-### GT-depth-range breakdown (fused TP count · loc-err m)
-All cooperative GT is within 0–20 m (close-range intersection); the 20–40 m and
-40 m+ bins are empty.
-
-| Range | SGBM fused (n · m) | WAFT fused (n · m) |
-|-------|:------------------:|:------------------:|
-| 0–10 m  | 3 · 1.384 | 2 · 1.233 |
-| 10–20 m | 10 · 0.687 | 5 · 0.678 |
-
-### Why SGBM beats WAFT (again)
-Same mechanism as Stage 3: WAFT's dense depth lifts *every* detection (more FPs,
-lower precision and recall after matching), while SGBM's sparse,
-consistency-checked depth filters weak detections — here SGBM fused recall 1.00 vs
-WAFT 0.53 at comparable localization. SGBM is also ~22× faster (6.81 vs 150.8
-s/frame on CPU). **SGBM is the method to cite for Stage 4.**
-
-> Caveats: 5 frames, one scenario, close range (all GT 0–20 m), vehicle-only GT —
-> an indicative V2V demonstration, not a benchmark. Ego vehicles are excluded from
-> coop-GT via a **temporary proximity filter** in `carla_loader._drop_ego_boxes`
-> (a re-collection will tag them `is_ego` and retire the hack — see CLAUDE.md
-> "Temporary code"). Per-agent GT visibility still uses the pre-fix binary
-> `visible_pixels` on disk (the occlusion-truthful collector rewrite needs a CARLA
-> re-collection to take effect), so partially visible cars may be under-counted.
-> The fusion core (`utils/fusion.py`) is schema-agnostic (handles Stage-3
-> position-only and full CARLA GT boxes); this run uses the detector path.
+> Caveats: 150 frames but **one scenario** (Town10HD intersection), a
+> leader–follower pair, 9 Car-only coop-GT vehicles (0–40 m) — a characterised
+> feasibility study, not a multi-scenario benchmark. The localization limit is
+> structural (~12° agent separation precludes triangulation); a perpendicular
+> approach would be needed to test the triangulation regime. The fusion core
+> (`utils/fusion.py`) is schema-agnostic; this run uses the detector path.
 
 ---
 
@@ -294,9 +256,12 @@ s/frame on CPU). **SGBM is the method to cite for Stage 4.**
 - Stage 2: 10 `*_boxes2d.json` + 10 `*_det.png`, `validation_results.json`
 - Stage 3: 24 `*_lift3d.json` + 24 `*_2d.png` + 24 `*_bev.png` per method,
   `validation_results.json` ×5 per method (one per sequence)
-- Stage 4: per method (`carla/{sgbm,waft}/`) 5 `carla_*_bev.png` +
-  `validation_results.json`; per-agent `carla/` subtrees under `depth/`,
-  `detections/`, `lift3d/` (each with `_val.png` / `_det.png` / `_bev.png` +
-  `_2d.png` for both `vehicle_a` and `vehicle_b`).
+- Stage 4: per method (`carla/{sgbm,waft}/`) per-frame `carla_*_bev_a.png` /
+  `carla_*_bev_b.png` (ego detections hidden; fused TP cyan / FP red),
+  `loc_error_vs_range_{method}.png`, `pr_curve_{method}.png`, and
+  `validation_results.json` (now carries `corroboration_rate`, `n_co_observed`,
+  `pr_sweep`); per-agent `carla/` subtrees under `depth/`, `detections/`,
+  `lift3d/` (each with `_val.png` / `_det.png` / `_bev.png` + `_2d.png` for both
+  `vehicle_a` and `vehicle_b`).
 
 See `outputs/README.md` for the full directory structure and file formats.
