@@ -1,0 +1,123 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Context and Motivation}
+
+The rapid evolution of Advanced Driver Assistance Systems (ADAS) and autonomous
+driving architectures has progressively shifted the modern automotive industry
+toward sensor-driven autonomy. Production vehicles are increasingly equipped with
+ADAS functionalities such as adaptive cruise control, autonomous emergency
+braking, and lane-keeping assistance, which actively mitigate human error and
+improve traffic safety~\cite{yurtsever2020}. These systems depend entirely on
+robust, real-time perception pipelines capable of constructing an accurate
+three-dimensional representation of the surrounding environment. Perception is
+not one module among many in an autonomous system: it is the entry point through
+which all subsequent reasoning, planning, and control decisions flow, and
+failures at this stage propagate irreversibly downstream.
+
+Despite significant advances in single-agent perception, the standalone paradigm
+faces a physical constraint that no algorithmic improvement can resolve: a single
+vehicle cannot perceive beyond its line of sight. Occlusions behind large
+commercial vehicles, blind intersections, and vehicles emerging from concealed
+driveways represent everyday driving scenarios that leave autonomous systems
+unaware of hazards until they enter the immediate sensor field of the
+ego-vehicle. Cooperative perception addresses this at its root: by exchanging
+spatial data over V2V communication networks, connected vehicles collectively
+extend their sensing horizon beyond what any individual agent could achieve,
+resolving blind spots through complementary viewpoints rather than better onboard
+processing.
+
+Deploying such a system at scale, however, raises an immediate practical question
+of sensing modality. High-definition Light
+Detection and Ranging (LiDAR) scanners have dominated the academic
+literature due to their direct 3D measurements, but their cost, power
+consumption, and mechanical complexity remain significant barriers to mass-market
+deployment. Passive stereo camera arrays offer a compelling alternative: metric
+depth recovery through geometric triangulation, without active illumination.
+Their hardware cost and form factor are compatible with large-scale fleet
+integration, making them a practical sensing backbone for cooperative systems.
+
+It is this combination --- cooperative perception built on passive stereo
+sensing --- that this project investigates.
+
+\section{Problem Statement}
+
+Deploying cooperative perception on passive stereo cameras raises a fundamental
+feasibility concern. Stereo depth estimation recovers metric distance through
+geometric triangulation, and its localisation error does not scale linearly with
+range but quadratically. An object detected at 50 metres carries substantially
+higher positional uncertainty than the same object detected at 15
+metres~\cite{huang2025}. This range-dependent degradation means that the quality
+of a stereo-sourced 3D detection is not a fixed property of the detector but a
+function of where the target is relative to the sensing vehicle.
+
+In a cooperative setting, this property becomes a structural problem. When two
+stereo-equipped vehicles observe the same target from different distances, the
+detections they produce carry fundamentally different uncertainty profiles.
+Merging them into a unified environmental model requires reconciling estimates
+whose reliability varies not just between agents but across the operational range
+of each agent individually. Whether the geometric complementarity of two
+viewpoints is sufficient to produce a net improvement in localisation accuracy,
+and under what distance conditions that improvement holds or collapses, is not
+established in the literature. Existing cooperative perception benchmarks and
+evaluation frameworks assume LiDAR as the primary sensing modality, leaving the
+stereo operating regime without a direct empirical
+reference~\cite{xu2023v2v4real}.
+
+The central question this work addresses is whether a cooperative perception
+system built exclusively on passive stereo cameras can produce a measurable and
+characterisable improvement in 3D localisation over single-agent stereo
+perception, and what the operating limits of such an approach are.
+
+\section{Research Objectives}
+
+To evaluate how object-level late fusion handles range-dependent stereo noise,
+this research defines three primary engineering and analytical objectives:
+
+\begin{enumerate}[label=\textbf{O\arabic*.},leftmargin=*,itemsep=4pt]
+  \item \textbf{Development of a Single-Agent 3D Spatial Localisation Baseline.}
+  Implement a stereo vision pipeline that pairs 2D object detection with passive
+  stereo depth estimation to project image-plane detections into a
+  three-dimensional metric space. The objective is to establish the per-agent
+  detection quality and localisation accuracy that feed into the cooperative
+  layer.
+
+  \item \textbf{Design of a Decentralised Object-Level Fusion Layer.} Construct a
+  modular Vehicle-to-Vehicle (V2V) late fusion architecture that operates
+  independently of agent software backbones. This module ingests 3D position
+  estimates from multiple collaborating nodes, resolves the geometric
+  transformations required to align independent coordinate frames, and merges
+  redundant detections into a unified scene representation.
+
+  \item \textbf{Empirical Characterisation of Cooperative Localisation
+  Dynamics.} Conduct systematic experiments within real-world benchmark
+  sequences and simulated multi-vehicle environments to map the performance
+  profile of the cooperative stack. The focus is to quantify how spatial
+  localisation error, precision, and recall evolve with increasing target
+  distance, and to analyse how late fusion logic behaves when aggregating depth
+  estimates from classical and learned stereo engines across agents.
+\end{enumerate}
+
+\section{Thesis Structure}
+
+The remainder of this document is organised as follows to address these
+objectives:
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{Chapter~\ref{ch:sota}: Literature Review and State-of-the-Art}
+  surveys existing work in stereo depth estimation, 3D spatial localisation, and
+  collaborative perception to establish the boundaries of current research.
+  \item \textbf{Chapter~\ref{ch:methodology}: Methodology and Proposed
+  Framework} details the end-to-end engineering architecture of the pipeline and
+  the V-model development process adopted to structure the design,
+  implementation, and validation phases of the system.
+  \item \textbf{Chapter~\ref{ch:experimental}: Experimental Setup and Simulation
+  Environment} outlines the dataset configurations, simulated CARLA scenarios, and
+  specific evaluation metrics used to test the system.
+  \item \textbf{Chapter 5: Results and Discussion} presents the empirical data,
+  performance plots, and the precision--recall trade-offs discovered during
+  testing.
+  \item \textbf{Chapter 6: Conclusion and Future Work} summarises the core
+  findings, addresses current system limitations, and outlines future research
+  pathways.
+\end{itemize}

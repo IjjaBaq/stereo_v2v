@@ -1,0 +1,425 @@
+% ─────────────────────────────────────────────────────────────────────────────
+% Complete verified bibliography
+% Distributed Vehicle Detection using Stereo Cameras and V2V Communication
+% All entries verified June 2026
+% ─────────────────────────────────────────────────────────────────────────────
+
+% Cited for: depth formula
+@book{szeliski2022computer,
+  author    = {Richard Szeliski},
+  title     = {Computer Vision: Algorithms and Applications},
+  publisher = {Springer Nature},
+  year      = {2022},
+  edition   = {2nd}
+}
+
+% Cited for: KITTI benchmark suite (real-image stereo data source, Chapter 4)
+@inproceedings{geiger2012kitti,
+  author    = {Geiger, Andreas and Lenz, Philip and Urtasun, Raquel},
+  title     = {Are We Ready for Autonomous Driving? {The} {KITTI} Vision
+               Benchmark Suite},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {3354--3361},
+  year      = {2012},
+  doi       = {10.1109/CVPR.2012.6248074}
+}
+
+% Cited for: CARLA simulator (Chapter 3 cooperative data source)
+@inproceedings{dosovitskiy2017carla,
+  author    = {Dosovitskiy, Alexey and Ros, German and Codevilla, Felipe
+               and L{\'o}pez, Antonio and Koltun, Vladlen},
+  title     = {{CARLA}: An Open Urban Driving Simulator},
+  booktitle = {Conference on Robot Learning (CoRL)},
+  pages     = {1--16},
+  year      = {2017}
+}
+
+
+% Cited for: ADAS use 
+@article{yurtsever2020,
+  author  = {Yurtsever, Ekim and Lambert, Jacob and Carballo, Alexander
+             and Takeda, Kazuya},
+  title   = {A Survey of Autonomous Driving: Common Practices and
+             Emerging Technologies},
+  journal = {IEEE Access},
+  volume  = {8},
+  pages   = {58443--58469},
+  year    = {2020},
+  doi     = {10.1109/ACCESS.2020.2983149}
+}
+% Cited for: LiDAR dominance
+@article{wang2025collaborative,
+  author  = {Wang, Naibang and Shang, Deyong and Gong, Yan and Hu, Xiaoxi
+             and Song, Ziying and Yang, Lei and Huang, Yuhan
+             and Wang, Xiaoyu and Lu, Jianli},
+  title   = {Collaborative Perception Datasets for Autonomous Driving:
+             A Review},
+  journal = {arXiv preprint arXiv:2504.12696},
+  year    = {2025}
+}
+
+% ── 2.1.1 Sensor Modalities ──────────────────────────────────────────────────
+% Cited for: general sensor modality comparison (LiDAR vs monocular vs stereo)
+@article{valverde2025,
+  author    = {Valverde, Miguel and Moutinho, Alexandra and Zacchi, Jo{\~a}o-Vitor},
+  title     = {A Survey of Deep Learning-Based {3D} Object Detection Methods
+               for Autonomous Driving Across Different Sensor Modalities},
+  journal   = {Sensors},
+  volume    = {25},
+  number    = {17},
+  pages     = {5264},
+  year      = {2025},
+  publisher = {MDPI},
+  doi       = {10.3390/s25175264}
+}
+
+% Cited for: monocular scale ambiguity, 15-30% depth error range
+@article{huang2025monocular,
+  author    = {Huang, Zhiwei and Ali, Mohammed A.H. and Nukman, Yusoff
+               and Xu, Hai Lu and Zhang, Shikai and Chen, Hui
+               and Alkhedher, Mohammad},
+  title     = {A Systematic Review of Monocular Depth Estimation for
+               Autonomous Driving: Methods and Dataset Benchmarking},
+  journal   = {Results in Engineering},
+  volume    = {26},
+  pages     = {105359},
+  year      = {2025},
+  publisher = {Elsevier},
+  doi       = {10.1016/j.rineng.2025.105359}
+}
+
+% Cited for: stereo distribution-agnostic depth recovery, 50m degradation claim
+@article{huang2025,
+  author    = {Huang, Qiyang},
+  title     = {Object-Centric Stereo Ranging for Autonomous Driving:
+               From Dense Disparity to Census-Based Template Matching},
+  journal   = {arXiv:2604.07980},
+  year      = {2025}
+}
+
+% ── 2.1.2 Stereo Depth Estimation ────────────────────────────────────────────
+
+% Cited for: local vs global stereo matching taxonomy
+@article{scharstein2002,
+  author    = {Scharstein, Daniel and Szeliski, Richard},
+  title     = {A Taxonomy and Evaluation of Dense Two-Frame Stereo
+               Correspondence Algorithms},
+  journal   = {International Journal of Computer Vision},
+  volume    = {47},
+  number    = {1--3},
+  pages     = {7--42},
+  year      = {2002},
+  doi       = {10.1023/A:1014573219977}
+}
+
+% Cited for: SGM algorithm, also cited in Table 2.1
+@article{hirschmuller2008,
+  author    = {Hirschm{\"u}ller, Heiko},
+  title     = {Stereo Processing by Semiglobal Matching and Mutual Information},
+  journal   = {IEEE Transactions on Pattern Analysis and Machine Intelligence},
+  volume    = {30},
+  number    = {2},
+  pages     = {328--341},
+  year      = {2008},
+  doi       = {10.1109/TPAMI.2007.1166}
+}
+
+% Cited for: PSMNet 3D cost volume architecture, also cited in Table 2.1
+@inproceedings{chang2018,
+  author    = {Chang, Jia-Ren and Chen, Yong-Sheng},
+  title     = {Pyramid Stereo Matching Network},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {5410--5418},
+  year      = {2018}
+}
+
+% Cited for: RAFT-Stereo iterative recurrent architecture, also cited in Table 2.1
+@inproceedings{lipson2021,
+  author    = {Lipson, Lahav and Teed, Zachary and Deng, Jia},
+  title     = {{RAFT-Stereo}: Multilevel Recurrent Field Transforms
+               for Stereo Matching},
+  booktitle = {International Conference on 3D Vision (3DV)},
+  year      = {2021},
+  note      = {arXiv:2109.07547}
+}
+
+% Cited for: WAFT-Stereo cost-volume-free architecture, also cited in Table 2.1
+% Title: WAFT-Stereo: Warping-Alone Field Transforms for Stereo Matching
+@misc{wang2026,
+  author        = {Wang, Yihan and Deng, Jia},
+  title         = {{WAFT-Stereo}: Warping-Alone Field Transforms for Stereo Matching},
+  year          = {2026},
+  eprint        = {2603.24836},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  note          = {Princeton University. Ranks 1st on ETH3D, Middlebury, and KITTI 2015.}
+}
+
+
+% ── 2.2.1 2D Object Detection ────────────────────────────────────────────────
+
+% Cited for: Faster R-CNN two-stage architecture, RPN, also cited in Table 2.2
+@inproceedings{ren2015,
+  author    = {Ren, Shaoqing and He, Kaiming and Girshick, Ross and Sun, Jian},
+  title     = {Faster {R-CNN}: Towards Real-Time Object Detection
+               with Region Proposal Networks},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {28},
+  year      = {2015},
+  note      = {arXiv:1506.01497}
+}
+
+% Cited for: YOLO family origin, one-stage detection paradigm
+@inproceedings{redmon2016,
+  author    = {Redmon, Joseph and Divvala, Santosh and Girshick, Ross
+               and Farhadi, Ali},
+  title     = {You Only Look Once: Unified, Real-Time Object Detection},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {779--788},
+  year      = {2016}
+}
+
+% Cited for: YOLOv12 area attention module, R-ELAN, also cited in Table 2.2
+@article{tian2025,
+  author    = {Tian, Yuhang and Ye, Qian and Zhang, Yi},
+  title     = {{YOLOv12}: Attention-Centric Real-Time Object Detectors},
+  journal   = {arXiv:2502.12524},
+  year      = {2025}
+}
+
+% Cited for: DETR set-prediction paradigm, bipartite matching
+@inproceedings{carion2020,
+  author    = {Carion, Nicolas and Massa, Francisco and Synnaeve, Gabriel
+               and Usunier, Nicolas and Kirillov, Alexander
+               and Zagoruyko, Sergey},
+  title     = {End-to-End Object Detection with Transformers},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  pages     = {213--229},
+  year      = {2020},
+  note      = {arXiv:2005.12872}
+}
+
+% Cited for: RT-DETR real-time transformer detection, also cited in Table 2.2
+@inproceedings{lv2024,
+  author    = {Lv, Wenyu and Zhao, Yian and Chang, Qinyao and Huang, Kui
+               and Wang, Guanzhong and Liu, Yi},
+  title     = {{RT-DETR}: {DETRs} Beat {YOLOs} on Real-Time Object Detection},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  year      = {2024},
+  note      = {arXiv:2304.08069}
+}
+
+% ── 2.2.2 Stereo-Based 3D Object Detection ───────────────────────────────────
+
+% Cited for: Pseudo-LiDAR back-projection approach
+@inproceedings{wang2019pseudolidar,
+  author    = {Wang, Yan and Chao, Wei-Lun and Garg, Divyansh
+               and Hariharan, Bharath and Campbell, Mark
+               and Weinberger, Kilian Q.},
+  title     = {Pseudo-{LiDAR} from Visual Depth Estimation:
+               Bridging the Gap in 3D Object Detection for Autonomous Driving},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {8445--8453},
+  year      = {2019}
+}
+
+% Cited for: PointRCNN as the 3D detection backend in Pseudo-LiDAR pipeline
+@inproceedings{shi2019,
+  author    = {Shi, Shaoshuai and Wang, Xiaogang and Li, Hongsheng},
+  title     = {{PointRCNN}: 3D Object Proposal Generation and Detection
+               from Point Cloud},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {770--779},
+  year      = {2019}
+}
+
+% Cited for: Pseudo-LiDAR++ sparse depth correction, quadratic error scaling
+@inproceedings{you2020,
+  author    = {You, Yurong and Wang, Yan and Chao, Wei-Lun and Garg, Divyansh
+               and Pleiss, Geoff and Hariharan, Bharath and Campbell, Mark
+               and Weinberger, Kilian Q.},
+  title     = {Pseudo-{LiDAR}++: Accurate Depth for 3D Object Detection
+               in Autonomous Driving},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2020}
+}
+
+% Cited for: DSGN plane-sweep stereo volumes, joint depth+detection
+@inproceedings{chen2020dsgn,
+  author    = {Chen, Yilun and Liu, Shu and Shen, Xiaoyong and Jia, Jiaya},
+  title     = {{DSGN}: Deep Stereo Geometry Network for 3D Object Detection},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {12536--12545},
+  year      = {2020}
+}
+
+% Cited for: LIGA-Stereo LiDAR-guided supervision for stereo feature learning
+@inproceedings{guo2021,
+  author    = {Guo, Xiaoyang and Shi, Shaoshuai and Wang, Xiaogang
+               and Li, Hongsheng},
+  title     = {{LIGA-Stereo}: Learning {LiDAR} Geometry Aware Representations
+               for Stereo-Based 3D Detector},
+  booktitle = {Proceedings of the IEEE/CVF International Conference
+               on Computer Vision (ICCV)},
+  pages     = {3153--3163},
+  year      = {2021}
+}
+
+% Cited for: StereoDETR decoupled monocular+stereo branches, real-time inference
+@article{mu2025,
+  author    = {Mu, Shiyi and Gu, Zichong and Ai, Zhiqi and Liu, Anqi
+               and Gao, Yilin and Xu, Shugong},
+  title     = {{StereoDETR}: Stereo-Based Transformer for 3D Object Detection},
+  journal   = {arXiv:2511.18788},
+  year      = {2025},
+  note      = {Submitted 24 Nov 2025, Cornell arXiv}
+}
+
+% ── 2.3.2 Evolution of Collaborative Perception Systems ──────────────────────
+
+% Cited for: V2VNet intermediate fusion paradigm using GNNs
+@inproceedings{wang2020v2vnet,
+  author    = {Wang, Tsun-Hsuan and Manivasagam, Sivabalan and Liang, Ming
+               and Yang, Bin and Zeng, Wenyuan and Urtasun, Raquel},
+  title     = {{V2VNet}: Vehicle-to-Vehicle Communication for Joint
+               Perception and Prediction},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  pages     = {605--621},
+  year      = {2020},
+  doi       = {10.1007/978-3-030-58536-5_36}
+}
+
+% Cited for: OPV2V first open CP benchmark, bandwidth bottleneck exposure
+@inproceedings{xu2022opv2v,
+  author    = {Xu, Runsheng and Xiang, Hao and Xia, Xin and Han, Xu
+               and Li, Jinlong and Ma, Jiaqi},
+  title     = {{OPV2V}: An Open Benchmark Dataset and Fusion Pipeline
+               for Perception with Vehicle-to-Vehicle Communication},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages     = {2583--2589},
+  year      = {2022}
+}
+
+% Cited for: Where2comm spatial confidence maps, selective feature transmission
+@inproceedings{hu2022,
+  author    = {Hu, Yue and Fang, Shaoheng and Lei, Zixing
+               and Zhong, Yiqi and Chen, Siheng},
+  title     = {{Where2comm}: Communication-Efficient Collaborative Perception
+               via Spatial Confidence Maps},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {35},
+  pages     = {4874--4886},
+  year      = {2022},
+  note      = {arXiv:2209.12836}
+}
+
+% Cited for: CoBEVT sparse axial self-attention BEV transformer fusion
+@inproceedings{xu2022cobevt,
+  author    = {Xu, Runsheng and Tu, Zhengzhong and Xiang, Hao and Shao, Wei
+               and Zhou, Bolei and Ma, Jiaqi},
+  title     = {{CoBEVT}: Cooperative Bird's Eye View Semantic Segmentation
+               with Sparse Transformers},
+  booktitle = {Conference on Robot Learning (CoRL)},
+  year      = {2022},
+  note      = {arXiv:2207.02202}
+}
+
+% Cited for: V2V4Real first real-world CP dataset, sim-to-real gap
+@inproceedings{xu2023v2v4real,
+  author    = {Xu, Runsheng and Xia, Xin and Li, Jinlong and Li, Hanzhao
+               and Zhang, Shuo and Tu, Zhengzhong and Meng, Zonglin
+               and Xiang, Hao and Dong, Xiaoyu and Song, Rui
+               and Yu, Hongkai and Zhou, Bolei and Ma, Jiaqi},
+  title     = {{V2V4Real}: A Real-World Large-Scale Dataset for
+               Vehicle-to-Vehicle Cooperative Perception},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  year      = {2023}
+}
+
+% Cited for: TUMTraf-V2X deployment-grade evaluation, heterogeneous sensors
+@inproceedings{zimmer2024,
+  author    = {Zimmer, Walter and Wardana, Gerhard Arya and Sritharan, Suren
+               and Zhou, Xingcheng and Song, Rui and Knoll, Alois C.},
+  title     = {{TUMTraf V2X} Cooperative Perception Dataset},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {22668--22677},
+  year      = {2024},
+  note      = {arXiv:2403.01316}
+}
+
+% Cited for: CATS-V2V adverse weather and lighting CP evaluation
+@inproceedings{li2025catsv2v,
+  author    = {Li, Hangyu and Cao, Bofeng and Liang, Zhaohui
+               and Li, Wuzhen and Oh, Juyoung and Chen, Yuxuan
+               and Liang, Shixiao and Zhou, Hang and Ma, Chengyuan
+               and Liu, Jiaxi and Li, Zheng and Zhang, Peng
+               and Long, KeKe and Liu, Maolin and Jiang, Jackson
+               and Yu, Chunlei and Liu, Shengxiang and Yu, Hongkai
+               and Li, Xiaopeng},
+  title     = {{CATS-V2V}: A Real-World Vehicle-to-Vehicle Cooperative
+               Perception Dataset with Complex Adverse Traffic Scenarios},
+  booktitle = {AAAI Conference on Artificial Intelligence},
+  year      = {2026},
+  note      = {arXiv:2511.11168}
+}
+
+% Cited for: UrbanIng-V2X multi-intersection heterogeneous CP evaluation
+@inproceedings{sekaran2025urbaningv2x,
+  author    = {Sekaran, Karthikeyan Chandra and Geisler, Markus
+               and R{\"o}{\ss}le, Dominik and Mohan, Adithya
+               and Cremers, Daniel and Utschick, Wolfgang
+               and Botsch, Michael and Huber, Werner
+               and Sch{\"o}n, Torsten},
+  title     = {{UrbanIng-V2X}: A Large-Scale Multi-Vehicle,
+               Multi-Infrastructure Dataset Across Multiple Intersections
+               for Cooperative Perception},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2025},
+  note      = {arXiv:2510.23478}
+}
+
+% ── 2.4 Open Challenges ──────────────────────────────────────────────────────
+
+% Cited for: SyncNet latency-aware CP framework
+@inproceedings{lei2022,
+  author    = {Lei, Zixing and Ren, Shunli and Hu, Yue
+               and Zhang, Wenjun and Chen, Siheng},
+  title     = {Latency-Aware Collaborative Perception},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  pages     = {316--332},
+  year      = {2022}
+}
+
+% Cited for: CoAlign pose-correction module for GNSS error mitigation
+@inproceedings{lu2023,
+  author    = {Lu, Yifan and Li, Quanhao and Liu, Baoan
+               and Dianati, Mehrdad and Feng, Chen
+               and Chen, Siheng and Wang, Yanfeng},
+  title     = {Robust Collaborative 3D Object Detection in Presence
+               of Pose Errors},
+  booktitle = {IEEE International Conference on Robotics
+               and Automation (ICRA)},
+  pages     = {4812--4818},
+  year      = {2023},
+  note      = {arXiv:2211.07214}
+}
+
+% Cited for: HEAD model-agnostic late/head-level fusion for heterogeneous fleets
+@inproceedings{qu2024,
+  author    = {Qu, Deyuan and Chen, Qi and Zhu, Yongqi and Zhu, Yihao
+               and Avedisov, Sergei S. and Fu, Song and Yang, Qing},
+  title     = {{HEAD}: A Bandwidth-Efficient Cooperative Perception Approach
+               for Heterogeneous Connected and Autonomous Vehicles},
+  booktitle = {European Conference on Computer Vision Workshops (ECCV)},
+  year      = {2024},
+  note      = {arXiv:2408.15428}
+}

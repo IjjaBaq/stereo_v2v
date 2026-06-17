@@ -1,0 +1,588 @@
+\chapter{Methodology and Proposed Framework}
+\label{ch:methodology}
+
+
+
+Chapter~\ref{ch:introduction} framed the central question of this thesis: whether perception built solely on stereo cameras can be made accurate enough that sharing detections between two cooperating vehicles produces a measurable improvement in what each one perceives. This chapter answers the how. It presents the proposed system through two complementary views: a structural view, decomposing the perception problem into a four-stage pipeline in which each stage carries a single responsibility, a documented interface to its neighbours, and a standalone validation step; and a procedural view, tracing the V-model development process that keeps design, implementation, and verification in deliberate correspondence, so that confidence in the final cooperative result rests on stage-by-stage evidence rather than on end-to-end output alone.
+
+
+
+
+\section{Design Requirements and Principles}
+\label{sec:requirements}
+
+Before any architecture can be proposed, the objectives of
+Chapter~\ref{ch:introduction} must be translated into concrete engineering
+requirements. These fall into functional requirements (what the system must do) and
+non-functional requirements (the qualities it must exhibit).
+
+\paragraph{Functional requirements.}
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{FR1 --- Depth from stereo.} Given a rectified stereo image pair
+  from one vehicle, the system shall produce a dense per-pixel estimate of scene
+  depth.
+  \item \textbf{FR2 --- Object detection.} The system shall detect the surrounding
+  vehicles in a single camera image as two-dimensional regions.
+  \item \textbf{FR3 --- Lifting to 3D.} The system shall combine detections with
+  depth to place each detected vehicle at a three-dimensional position in the
+  observing vehicle's coordinate frame.
+  \item \textbf{FR4 --- Cooperative fusion.} Given the independent 3D observations
+  of two vehicles and their relative pose, the system shall register both sets of
+  observations into a common frame and combine them into a single, consistent
+  scene.
+  \item \textbf{FR5 --- Symmetric benefit measurement.} The system shall make it
+  possible to quantify, for \emph{each} of the two vehicles, the benefit obtained
+  from cooperation --- both the objects recovered that the vehicle could not see
+  alone and any change in localization accuracy.
+\end{itemize}
+
+\paragraph{Non-functional requirements.}
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{NFR1 --- Modularity.} Each perception stage shall be independently
+  runnable, testable, and replaceable, communicating with its neighbours only
+  through a documented data interface.
+  \item \textbf{NFR2 --- Reproducibility.} Every run shall be deterministic given
+  its configuration, and all parameters and outcomes shall be recorded so that any
+  result can be regenerated and audited.
+  \item \textbf{NFR3 --- Stagewise verifiability.} No stage shall depend on the
+  correctness of a later stage for its own validation; each shall be verifiable
+  against ground truth in isolation.
+  \item \textbf{NFR4 --- Honesty of output.} The system shall report only those
+  quantities that the sensing modality can reliably support, and shall explicitly
+  decline to report those it cannot.
+\end{itemize}
+
+\section{The V-Model Development Process}
+\label{sec:vmodel}
+
+The system was developed under a V-model lifecycle. The V-model is well
+suited to this work for two reasons. First, the perception pipeline is naturally
+decomposable into stages whose interfaces can be specified up front, which favours
+a process that fixes requirements and design before implementation. Second, and
+more importantly, the thesis question is ultimately a question of trust: a
+cooperative gain is only meaningful if each link in the chain that produces it has
+been independently verified. The V-model makes this verification structural rather
+than incidental --- every level of design is paired, from the outset, with the
+level of testing that will confirm it.
+
+The left arm of the V descends from abstract intent to concrete code: research
+objectives are refined into the system requirements of Section~\ref{sec:requirements},
+the requirements into the architecture of Section~\ref{sec:architecture}, the
+architecture into the detailed design of each individual stage, and the stage
+designs into implementation. The right arm ascends back up through progressively
+broader levels of testing, and --- this is the defining feature of the model ---
+each ascending verification level is tied horizontally to the descending design
+level it confirms (Figure~\ref{fig:vmodel}).
+
+\begin{figure}[htbp]
+\centering
+\hyphenpenalty=10000\exhyphenpenalty=10000
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[node distance=0pt,vbox/.append style={minimum width=3.6cm,text width=3.3cm}]
+% Left (design) arm — descending
+\node[vbox,fill=blue!6]   (L1) at (0,8)   {Requirements / Objectives\\\footnotesize(Ch.~1)};
+\node[vbox,fill=blue!6]   (L2) at (1.6,6)  {System Architecture\\\footnotesize(Sec.~\ref{sec:architecture})};
+\node[vbox,fill=blue!6]   (L3) at (3.2,4)  {Stage / Module Design\\\footnotesize(Sec.~\ref{sec:stage1}--\ref{sec:stage4})};
+\node[vbox,fill=blue!6]   (L4) at (4.8,2)  {Detailed Design\\\footnotesize(stage modules)};
+% Right (verification) arm — ascending
+\node[vbox,fill=green!8]  (R1) at (14.4,8) {Acceptance Validation\\\footnotesize coop.\ dynamics \& limits};
+\node[vbox,fill=green!8]  (R2) at (12.8,6) {System Testing\\\footnotesize end-to-end agent pair};
+\node[vbox,fill=green!8]  (R3) at (11.2,4) {Stage Validation\\\footnotesize vs.\ ground truth (NFR3)};
+\node[vbox,fill=green!8]  (R4) at (9.6,2)  {Unit Testing\\\footnotesize per-stage automated};
+% Bottom vertex
+\node[vbox,fill=gray!12]  (IM) at (7.2,0.2) {Implementation};
+% V arms
+\draw[flow] (L1) -- (L2); \draw[flow] (L2) -- (L3); \draw[flow] (L3) -- (L4); \draw[flow] (L4) -- (IM);
+\draw[flow] (IM) -- (R4); \draw[flow] (R4) -- (R3); \draw[flow] (R3) -- (R2); \draw[flow] (R2) -- (R1);
+% Horizontal correspondences
+\draw[corr] (L1) -- (R1); \draw[corr] (L2) -- (R2); \draw[corr] (L3) -- (R3); \draw[corr] (L4) -- (R4);
+\end{tikzpicture}}
+\caption[The V-model as instantiated in this project]{The V-model as instantiated
+in this project.}
+\label{fig:vmodel}
+\end{figure}
+
+The horizontal correspondences are realized concretely in this project:
+
+\begin{itemize}[leftmargin=*,itemsep=4pt]
+  \item \textbf{Implementation $\leftrightarrow$ Unit testing.} Each stage is
+  accompanied by an automated test module exercising its internal logic in isolation from the rest of the pipeline and from
+  real data. These tests encode the detailed design contracts and are the first
+  gate any change must pass.
+  \item \textbf{Stage design $\leftrightarrow$ Stage validation.} Each stage has a
+  dedicated, standalone validation procedure that scores its output against ground
+  truth without invoking later stages (NFR3). This is the level at which a stage's
+  design --- not just its code --- is confirmed to behave as intended on
+  real inputs.
+  \item \textbf{System architecture $\leftrightarrow$ System testing.} The
+  architecture is exercised as a whole by running the complete chain --- depth,
+  detection, lifting, and fusion --- for a genuine pair of cooperating agents,
+  confirming that the stage interfaces compose correctly end to end.
+  \item \textbf{Objectives $\leftrightarrow$ Acceptance validation.} The top-level
+  question is answered by the final measurement of the cooperative gain in a
+  controlled multi-agent setting, which is the engineering acceptance criterion for
+  the thesis as a whole.
+\end{itemize}
+
+A practical consequence of this discipline is that defects are localized to the
+narrowest possible level. A regression in a geometric routine surfaces at the unit
+level; a degradation in depth quality surfaces at stage validation; an interface
+mismatch surfaces at system testing. Because each level has an explicit owner in
+the design, failures are diagnosed against the corresponding specification rather
+than against the opaque end-to-end behaviour.
+
+\section{System Architecture Overview}
+\label{sec:architecture}
+
+The proposed system is a \textbf{four-stage pipeline}. Each stage consumes the
+output of its predecessor through a documented interface and emits artifacts that
+are both the input to the next stage and an independently inspectable result. The
+stages and their data interfaces are summarized in Table~\ref{tab:stages}, and their
+end-to-end composition across a pair of cooperating vehicles is shown in
+Figure~\ref{fig:pipeline}.
+
+\begin{table}[htbp]
+\centering
+\caption{The four pipeline stages and their interfaces.}
+\label{tab:stages}
+\begin{tabularx}{\textwidth}{@{}clL@{}}
+\toprule
+\textbf{Stage} & \textbf{Name} & \textbf{Input $\rightarrow$ Output} \\
+\midrule
+1 & Depth  & Rectified stereo pair $\rightarrow$ dense disparity / metric depth \\
+2 & Detect & Single (left) image $\rightarrow$ 2D vehicle regions \\
+3 & Lift   & 2D regions + depth $\rightarrow$ 3D position per vehicle  \\
+4 & Fuse & Two agents' 3D observations + relative pose $\rightarrow$ one fused, registered scene \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Stages 1 through 3 constitute the \textbf{single-vehicle perception chain}: they
+take one vehicle's raw stereo imagery and turn it into a set of 3D vehicle
+positions expressed in that vehicle's own camera frame. Stage 4 is the
+\textbf{cooperative layer}: it takes the perception output of two such vehicles and
+the geometric relationship between them, and produces a single shared scene. The first three stages fulfill Objective~1 (the single-agent 3D localisation baseline); Stage 4 addresses Objective~2 (the decentralised object-level fusion layer); and the performance analysis of the combined, end-to-end system addresses Objective~3 (the empirical characterisation of cooperative localisation dynamics).
+
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  databox/.append style={minimum width=2.6cm},
+  stagebox/.append style={minimum width=2.9cm},
+  lbl/.style={font=\scriptsize,fill=gray!12,inner sep=1.5pt,rounded corners=1pt}]
+% ---- Agent A : S1 (depth) and S2 (detection) run in parallel ----
+\node[databox]  (srcA)  at (0,6)    {Stereo pair (L,R)};
+\node[databox]  (imgA)  at (3.6,6)  {Left image};
+\node[stagebox] (s1A)   at (0,4.3)  {S1 — Depth\\\footnotesize disparity $\rightarrow$ depth};
+\node[stagebox] (s2A)   at (3.6,4.3){S2 — Detection\\\footnotesize 2D vehicle boxes};
+\node[stagebox] (s3A)   at (1.8,2.6){S3 — Lift to 3D\\\footnotesize 3D positions};
+\node[font=\bfseries\small] at (1.8,7) {Vehicle A};
+% ---- Agent B (mirror) ----
+\node[databox]  (srcB)  at (9,6)    {Stereo pair (L,R)};
+\node[databox]  (imgB)  at (12.6,6) {Left image};
+\node[stagebox] (s1B)   at (9,4.3)  {S1 — Depth\\\footnotesize disparity $\rightarrow$ depth};
+\node[stagebox] (s2B)   at (12.6,4.3){S2 — Detection\\\footnotesize 2D vehicle boxes};
+\node[stagebox] (s3B)   at (10.8,2.6){S3 — Lift to 3D\\\footnotesize 3D positions};
+\node[font=\bfseries\small] at (10.8,7) {Vehicle B};
+% ---- intra-agent flows ----
+\foreach \s/\d in {srcA/s1A,imgA/s2A,srcB/s1B,imgB/s2B} \draw[flow] (\s) -- (\d);
+\draw[flow] (s1A.south) -- (s3A.north) ;
+\draw[flow] (s2A.south) -- (s3A.north) ;
+\draw[flow] (s1B.south) -- (s3B.north) ;
+\draw[flow] (s2B.south) -- (s3B.north) ;
+% ---- fusion ----
+\node[fusebox] (fus) at (6.3,0.7)
+  {S4 — V2V Fusion\\\footnotesize register $\cdot$ match $\cdot$ merge};
+\draw[flow] (s3A.south) |- (fus.west);
+\draw[flow] (s3B.south) |- (fus.east);
+\node[databox,fill=orange!6] (pose) at (10.0,0.7) {relative pose\\\footnotesize $T_{B\rightarrow A}$};
+\draw[flow] (pose) -- (fus);
+\node[databox,fill=orange!6,minimum width=5cm] (out) at (6.3,-1.4)
+  {Fused scene in A's frame\\\footnotesize (symmetric gain measurable)};
+\draw[flow] (fus) -- (out);
+\end{tikzpicture}}
+\caption[End-to-end data flow]{End-to-end data flow of the four-stage pipeline.}
+\label{fig:pipeline}
+\end{figure}
+
+Two architectural properties follow from the requirements of
+Section~\ref{sec:requirements} :
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{Symmetry of the perception chain.} The identical Stage 1--3 chain
+  is applied to each vehicle. Neither agent is privileged; cooperation is a
+  relationship between two equal perception systems, which is what makes a
+  symmetric benefit measurement (FR5) meaningful.
+  \item \textbf{A single point of coupling.} The two perception chains are entirely
+  independent until Stage 4. All inter-agent coupling is confined to the
+  fusion layer, keeping the single-vehicle design free of cooperation-specific
+  concerns.
+\end{itemize}
+
+\section{Data Sources and the Dual-Dataset Strategy}
+\label{sec:data}
+
+A recurring difficulty identified in Chapter~\ref{ch:introduction} is that no
+single dataset offers both real stereo imagery and simultaneous
+multi-vehicle recordings with trustworthy ground truth. The architecture resolves
+this with a deliberate dual-dataset strategy, assigning each data source
+the role it is uniquely suited to.
+
+\begin{itemize}[leftmargin=*,itemsep=4pt]
+  \item \textbf{Real-image stereo source (single-vehicle chain).} Stages 1--3 are
+  designed and validated against real-world driving stereo data. This is the only
+  way to confirm that the camera-only perception chain behaves on genuine imagery,
+  with its real noise, lighting, and scene complexity. Because this source provides
+  one vehicle's view at a time, it cannot exercise cooperation, but it is the
+  authoritative ground for the single-vehicle claim.
+  \item \textbf{Simultaneous multi-agent source (cooperative layer).} Stage 4
+  requires two vehicles observing the same scene at the same instant,
+  together with exact relative pose and a complete inventory of which objects each
+  vehicle can truly see. These conditions are obtainable from a controlled
+  simulation environment~\cite{dosovitskiy2017carla} that records two moving ego
+  vehicles in a shared scene, with per-object, per-agent visibility derived from
+  the rendered view rather than guessed geometrically. This source is what makes
+  the cooperative gain measurable (FR5) with reliable ground truth.
+\end{itemize}
+
+This division is an engineering decision rather than a compromise: each stage is
+exercised on the data that can actually test it. The shared
+interface contract between the stages (Table~\ref{tab:stages}) is what allows the
+same Stage 1--3 design to operate on either source.
+
+\section{Stage 1 --- Stereo Depth Estimation}
+\label{sec:stage1}
+
+The remaining sections of this chapter make use of mathematical notation throughout. To keep them self-contained, the notation used is collected once in Appendix~\ref{app:notation} (Table~\ref{tab:notation}).
+
+\paragraph{Purpose.} Stage 1 converts a rectified stereo image pair into a dense
+estimate of per-pixel disparity, from which metric depth is recovered by the
+standard stereo triangulation relationship~\cite{szeliski2022computer}
+\begin{equation}
+Z = \frac{f \cdot B}{d}
+\label{eq:triangulation}
+\end{equation}
+where $Z$ is the depth of a pixel, $f$ the focal length in pixels, $B$ the stereo
+baseline in metres, and $d$ the disparity (the horizontal displacement of the pixel
+between the left and right images). The baseline itself is recovered from the two
+cameras' projection matrices, $B = (t_x^{L} - t_x^{R}) / f$, where $t_x^{L}$ and
+$t_x^{R}$ are the horizontal translation terms of the left and right projection
+matrices.
+
+This relationship is central to the entire methodology and reappears as the
+dominant source of error analysed in later chapters. Differentiating it with
+respect to disparity gives the depth error induced by a disparity error:
+\begin{equation}
+\left| \Delta Z \right| \;\approx\; \frac{Z^{2}}{f \cdot B}\, \left| \Delta d \right|
+\label{eq:deptherror}
+\end{equation}
+
+Because the depth error scales with the square of the distance, a fixed
+disparity error of a fraction of a pixel translates into a small error nearby but a
+large one far away. The system is therefore expected, by construction, to be most
+accurate on nearby vehicles --- a property that informs the design of every
+subsequent stage and that is quantified empirically in Chapter~5.
+
+\paragraph{Design.} The stage is built around two interchangeable depth estimators
+that represent two distinct engineering trade-offs, selectable without altering any
+downstream stage:
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item A \textbf{classical semi-global block-matching estimator}~\cite{hirschmuller2008},
+  which produces a sparse disparity map: it reports depth only where a
+  confident left--right correspondence exists and leaves textureless or ambiguous
+  regions unfilled. Its sparsity is, in effect, a built-in reliability filter ---
+  the pixels it does report tend to lie on well-defined surfaces.
+  \item A \textbf{learned deep-stereo estimator}~\cite{wang2026}, which
+  produces a dense disparity map with full coverage, at greater
+  computational cost. It is run directly as an in-process inference step.
+\end{itemize}
+
+Offering both is a deliberate architectural choice. It allows the methodology to
+separate questions of depth accuracy from questions of downstream
+robustness: a sparse, conservative map and a dense, complete map stress the later
+stages differently, and carrying both through the pipeline lets the project reason
+about that trade-off rather than presuppose a single answer.
+
+\paragraph{Interface.} The stage emits a per-pixel disparity map in which invalid
+pixels are explicitly marked, so that downstream stages can distinguish ``no
+measurement'' from ``a measurement of zero.'' This explicit invalid-pixel contract
+is what allows the sparse and dense estimators to share one interface.
+
+\section{Stage 2 --- 2D Object Detection}
+\label{sec:stage2}
+
+\paragraph{Purpose.} Stage 2 locates the surrounding vehicles in the (left) camera
+image as two-dimensional regions. It answers where in the image the objects
+of interest are, the question of where in space is addressed separately, in Stage 3.
+
+\paragraph{Design.} The stage uses a pretrained transformer-based object
+detector~\cite{lv2024} applied to the left image of the stereo pair. Detection
+operates on the single image rather than on the depth map because appearance-based
+detection is mature and robust, whereas the depth map is better used for
+localizing an already-detected object than for finding it. The
+detector is pretrained on a general-purpose object vocabulary; the stage maps the
+relevant vehicle categories of that vocabulary onto the project's target class and
+discards the rest, applying a confidence threshold to suppress weak detections.
+
+\paragraph{Class scope.} The pipeline is deliberately scoped to a single object
+class --- the car. Restricting the class keeps the evaluation interpretable and aligned
+with the honesty principle (NFR4). The architecture does not preclude additional
+classes; re-enabling them is a configuration concern localized to the detection and
+matching stages.
+
+\paragraph{Interface.} The stage emits, per image, a set of labelled 2D regions
+with associated confidences, which become the input to the lifting stage alongside
+the Stage 1 depth map.
+
+\section{Stage 3 --- Lifting to 3D Position}
+\label{sec:stage3}
+
+\paragraph{Purpose.} Stage 3 is the junction of the two preceding stages: it
+combines each 2D detection (Stage 2) with the depth map (Stage 1) and the camera
+calibration to place the detected vehicle at a three-dimensional position in the
+observing vehicle's camera frame. This is the stage at which the system crosses
+from image space into the metric 3D world in which cooperation takes place.
+
+\paragraph{The position-only design decision.} The single most important
+methodological decision in the single-vehicle chain is that Stage 3 outputs 3D
+position only --- a point $(x, y, z)$ per vehicle, carried together with the source
+2D region --- and deliberately does not output a full 3D bounding box with
+size and heading. This decision is a direct application of the honesty principle
+(NFR4) and follows from the range-dependent stereo uncertainty at the heart of the
+problem statement (Chapter~\ref{ch:introduction}).
+
+The reasoning is geometric. Recovering an object's position requires
+establishing how far away it is, which stereo supports. Recovering an object's
+size and heading, by contrast, requires resolving its
+three-dimensional extent and orientation from a single viewpoint at range --- and
+the same disparity-to-depth sensitivity that limits position accuracy at distance
+makes extent and orientation far less observable still. 
+
+\paragraph{Design.} For each 2D region, the stage samples a representative depth
+from the disparity map within the region, converts it to a metric distance via the
+stereo relationship of Section~\ref{sec:stage1}, and unprojects the region's centre
+to a 3D point using the camera calibration. All 3D quantities are expressed in the
+KITTI camera convention ($X$ right, $Y$ down, $Z$ forward into the scene;
+Figure~\ref{fig:frames}). Given a region centre at pixel $(u, v)$ and its sampled
+depth $Z$, the inverse of the pinhole projection yields the 3D point
+\begin{equation}
+X = \frac{(u - c_x)\, Z}{f_x}, \qquad
+Y = \frac{(v - c_y)\, Z}{f_y}, \qquad
+Z = Z
+\label{eq:unproject}
+\end{equation}
+where $(f_x, f_y)$ are the focal lengths and $(c_x, c_y)$ the principal point of the
+left camera, both read from its calibration. The point $(X, Y, Z)$ is the vehicle's
+position in the observing vehicle's camera frame. Two considerations shape this:
+
+\begin{itemize}[leftmargin=*,itemsep=4pt]
+  \item \textbf{Robust depth sampling within a region.} A detection's region
+  contains pixels belonging to the vehicle but also, typically, road surface and
+  background. The stage therefore does not take a naive average; it samples depth in
+  a way designed to favour the object surface over contaminating background, with
+  the sampling strategy tuned per depth estimator because the sparse and dense maps
+  of Stage 1 have very different pixel distributions inside a region. The specific
+  tuning is treated as an experimental matter and reported in Chapter~5.
+  \item \textbf{Confidence propagation.} The 3D position inherits a confidence that
+  scales the 2D detection confidence by the proportion of the region for which valid
+  depth was available, $c_{3D} = c_{2D} \cdot \rho$, where the coverage ratio
+  $\rho \in [0, 1]$ is the fraction of region pixels carrying a valid depth
+  measurement. A position lifted from a well-covered region is thus trusted more
+  than one lifted from a sparsely measured region, and this confidence later
+  participates directly in the fusion merge (Section~\ref{sec:stage4}).
+\end{itemize}
+
+\paragraph{Interface.} The stage emits, per detected vehicle, a labelled 3D
+position with its propagated confidence and the source 2D region. This compact,
+position-only representation is intentionally schema-compatible with the fusion
+core, which is designed to operate whether or not size and heading are present.
+
+\section{Stage 4 --- Cooperative V2V Fusion}
+\label{sec:stage4}
+
+Stage 4 is the cooperative layer and the realization of the thesis goal. It takes
+the independent 3D observations of two vehicles and combines them into a single
+shared scene in which objects visible to either vehicle become known to both.
+Combining detections after each vehicle has perceived independently is the
+late fusion strategy for cooperative perception~\cite{xu2022opv2v}, chosen
+here because it keeps the inter-vehicle interface compact (3D positions rather than
+raw imagery) and the single-vehicle chain unaware of cooperation. Its design
+separates a source-agnostic fusion core from the data plumbing that
+feeds it, so that the same fusion logic operates on either real or simulated inputs
+and on either position-only or fully-specified boxes.
+
+The fusion proceeds in three conceptual steps --- \textbf{register, match, merge}
+--- preceded by the construction of the common frame (Figure~\ref{fig:fusion}).
+
+\paragraph{Common frame and registration.} Each vehicle perceives in its own camera
+frame; the two frames are unrelated until the vehicles' relative pose is known.
+Cooperation therefore begins by choosing one vehicle's frame (Vehicle A's) as the
+reference and transforming the other vehicle's observations into it by a single
+rigid $4\times4$ homogeneous transform derived from the two vehicles' poses,
+\begin{equation}
+T_{B \rightarrow A} = M \; T_{W,A}^{-1} \; T_{W,B} \; M^{-1}
+\label{eq:registration}
+\end{equation}
+where $T_{W,A}$ and $T_{W,B}$ are the world-from-camera transforms of the two
+vehicles (each built from the vehicle's world pose composed with its fixed camera
+mount), and $M$ is the constant axis map from the vehicle frame to the KITTI camera
+convention, $(x, y, z)_{\text{cam}} = (y, -z, x)_{\text{vehicle}}$
+(Figure~\ref{fig:frames}). Any 3D point observed by Vehicle B is then carried into
+A's frame by $\tilde{p}_A = T_{B \rightarrow A}\, \tilde{p}_B$ (in homogeneous
+coordinates), and a box's heading is offset by the transform's rotation about the
+camera vertical axis, $\theta_{\text{offset}} = \operatorname{atan2}(R_{13}, R_{33})$,
+extracted from the rotation block $R$ of $T_{B \rightarrow A}$. Because the
+cooperative source records simultaneous observations, this is a purely spatial
+alignment --- there is no temporal extrapolation, and a static object seen by both
+vehicles should, after registration, coincide. The design exploits exactly this
+property as a built-in correctness check: an object seen by both agents must
+register to near-zero displacement, and a large displacement is treated as a symptom
+of a coordinate or pose error rather than of a moving object. This sanity check is
+part of the methodology: it is the mechanism by which the
+most dangerous class of bug in cooperative perception, a silent frame misalignment,
+is caught.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    >={Latex[length=2.4mm]},
+    axis/.style={->,thick,black!82},
+    ttl/.style={font=\bfseries\small,align=center},
+    sub/.style={font=\footnotesize,text=black!55,align=center},
+    alab/.style={font=\small},
+    panel/.style={draw=black,rounded corners=4pt,minimum width=5.6cm,minimum height=5.7cm}]
+% ===== equal-size frames (black border, no fill) =====
+\begin{scope}[on background layer]
+  \node[panel] (cpan) at (1.4,0.45) {};
+  \node[panel] (vpan) at (10.0,0.45) {};
+\end{scope}
+% ===== KITTI camera frame axes =====
+\coordinate (oc) at (0,0);
+\draw[axis] (oc) -- (2.0,0)    node[alab,right]      {$X$ (right)};
+\draw[axis] (oc) -- (0,-1.7)   node[alab,below]      {$Y$ (down)};
+\draw[axis] (oc) -- (1.2,0.95) node[alab,above right]{$Z$ (forward)};
+\fill[black!82] (oc) circle (2.2pt);
+\node[ttl] at (1.4,2.7)  {KITTI camera frame};
+\node[sub] at (1.4,2.28) {optical, right-handed};
+% ===== Vehicle frame axes =====
+\coordinate (ov) at (8.9,0);
+\draw[axis] (ov) -- ($(ov)+(1.2,0.95)$) node[alab,above right]{$x$ (forward)};
+\draw[axis] (ov) -- ($(ov)+(2.0,0)$)    node[alab,right]      {$y$ (right)};
+\draw[axis] (ov) -- ($(ov)+(0,1.6)$)    node[alab,left]       {$z$ (up)};
+\fill[black!82] (ov) circle (2.2pt);
+\node[ttl] at (10.0,2.7)  {Vehicle (agent) frame};
+\node[sub] at (10.0,2.28) {left-handed, CARLA};
+% ===== axis-map bridge arrow, in the gap between the two boxes =====
+\coordinate (mid) at (0,0.5);
+\draw[-{Latex[length=2.6mm]},thick,black!55]
+  (vpan.west |- mid) to[bend right=14]
+  node[above=1pt,font=\footnotesize\itshape,text=black!60]{axis map $M$}
+  (cpan.east |- mid);
+% ===== axis-map equation, centred under the whole figure =====
+\node[draw=black!55,rounded corners=3pt,fill=none,font=\footnotesize,inner sep=7pt,anchor=north]
+  at ([yshift=-0.45cm]current bounding box.south)
+  {Axis map\quad $(X,\,Y,\,Z)_{\text{cam}} = (\,y,\; -z,\; x\,)_{\text{vehicle}}$};
+\end{tikzpicture}
+\caption[The two coordinate frames]{Spatial Mapping Between KITTI Optical and CARLA Vehicle Coordinate Frames}
+\label{fig:frames}
+\end{figure}
+
+\paragraph{Matching.} Registered observations from the two vehicles are associated
+greedily by bird's-eye-view (ground-plane) centre distance, within object class,
+accepting a pair as the same physical object only when their separation falls below
+a per-class threshold $\tau$. The bird's-eye-view distance discards the vertical
+axis and measures separation in the ground plane,
+\begin{equation}
+d_{\text{BEV}}(a, b) = \sqrt{(x_a - x_b)^2 + (z_a - z_b)^2}, \qquad
+\text{match if } d_{\text{BEV}} \le \tau
+\label{eq:bev}
+\end{equation}
+candidate pairs being considered in ascending order of distance so that the closest
+compatible pair is committed first. Matching on ground-plane centre distance ---
+rather than on 3D box overlap --- is the natural choice given the position-only
+output of Stage 3, and it is exactly what makes the fusion core able to consume both
+position-only and fully-specified inputs through one code path.
+
+\paragraph{Merge.} A corroborated pair --- one object that both vehicles saw --- is
+merged into a single estimate. Writing the two observations' confidences as $c_A$
+and $c_B$, each merged position coordinate is the confidence-weighted average of the
+two observations, and the fused confidence is combined by a noisy-OR rule:
+\begin{equation}
+\hat{x} = \frac{c_A\, x_A + c_B\, x_B}{c_A + c_B}
+\quad (\text{and likewise for } y, z), \qquad
+\hat{c} = 1 - (1 - c_A)(1 - c_B)
+\label{eq:merge}
+\end{equation}
+The noisy-OR rule reflects that two independent detections of the same object are
+more trustworthy than either alone (the fused confidence exceeds both inputs). Where
+the inputs happen to carry size and heading, those are merged too --- dimensions by
+the same confidence-weighted average, and heading by a confidence-weighted
+\emph{circular} mean,
+\begin{equation}
+\hat{\theta} = \operatorname{atan2}\!\Big(\textstyle\sum_i c_i \sin\theta_i,\; \sum_i c_i \cos\theta_i\Big),
+\label{eq:circmean}
+\end{equation}
+which averages angles correctly across the $\pm\pi$ wrap-around. The merge is
+nonetheless designed to degrade gracefully to position-only when size and heading
+are absent. An object seen by only one vehicle is carried into the shared scene
+unmerged, tagged with its source --- this is precisely the blind-spot recovery that
+motivates the whole system. A matched pair whose post-registration displacement is
+implausibly large is not merged but flagged, on the principle that for
+simultaneous observations a large displacement indicates a faulty match or pose
+error rather than genuine motion.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.6cm and 1.2cm]
+\node[databox,fill=blue!8] (a) {A's observations\\\footnotesize $a_1\ a_2\ a_3$};
+\node[databox,fill=green!8,right=3.2cm of a] (b)
+  {B's observations\\\footnotesize (registered into A's frame)};
+\node[fusebox,below=1.2cm of {$(a)!0.5!(b)$},minimum width=4.4cm] (match)
+  {Match by BEV centre distance\\\footnotesize within class, thresholded $\le \tau$};
+\draw[flow] (a.south) |- (match.west);
+\draw[flow] (b.south) |- (match.east);
+% outcomes
+\node[databox,below left=1.3cm and -0.3cm of match,fill=orange!10,text width=3.0cm] (corr)
+  {corroborated pair\\\footnotesize merge position,\\ noisy-OR confidence};
+\node[databox,below=1.3cm of match,fill=gray!8,text width=2.8cm] (onlyA)
+  {only-A object\\\footnotesize (recovered for B)};
+\node[databox,below right=1.3cm and -0.3cm of match,fill=gray!8,text width=2.8cm] (onlyB)
+  {only-B object\\\footnotesize (recovered for A)};
+\foreach \n in {corr,onlyA,onlyB} \draw[flow] (match) -- (\n);
+\node[fusebox,below=4.6cm of match,minimum width=6.2cm,fill=orange!12] (scene)
+  {SHARED FUSED SCENE (A's frame)\\\footnotesize corroborated objects $+$ objects either agent saw alone};
+\foreach \n in {corr,onlyA,onlyB} \draw[flow] (\n) -- (scene);
+\end{tikzpicture}
+\caption[The register--match--merge logic of the fusion core]{The
+register--match--merge logic of the fusion core.}
+\label{fig:fusion}
+\end{figure}
+
+\paragraph{Symmetric benefit by design.} The fused output is a single shared
+scene, and this is what allows the cooperative benefit to be measured symmetrically
+(FR5). Evaluation is framed against a cooperative ground truth --- the union
+of every object visible to either vehicle, de-duplicated by object identity --- and
+the shared scene is scored from both vehicles' standpoints: how many objects each
+vehicle recovered that it could not have seen alone, and whether its localization of
+objects it could see improved. The architecture treats the two vehicles identically
+in this accounting, so neither agent's gain is privileged. Because the two ego
+vehicles are themselves part of the simulated scene yet are not perception
+targets (their poses are shared directly over the cooperative link), the
+evaluation design treats an agent's detection of the other ego as neither a
+hit nor a false alarm --- an ignore region --- so that the cooperation metric
+reflects perceived traffic rather than the agents perceiving each other.
+
+\bigskip
+\noindent Two design commitments give the framework its character. The first is honesty
+about sensing limits: because stereo cannot reliably recover object size or heading
+at range, the system outputs 3D position only, and structures both its
+representation and its evaluation around what cameras can actually provide. The
+second is verification by construction: the V-model pairs every level of
+design with the level of testing that confirms it, so that the headline cooperative
+result rests on independently validated stages rather than on end-to-end behaviour
+alone. With the architecture and process established, Chapter~4 details the
+experimental setup and simulation environment, and Chapter~5 reports the stagewise
+validation and the characterisation of the cooperative localisation dynamics that
+this framework was built to measure.

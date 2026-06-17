@@ -1,0 +1,38 @@
+% ------------------------------- Abstract ------------------------------------
+\chapter*{Abstract}
+\markboth{Abstract}{Abstract}
+
+Cooperative perception lets connected vehicles extend their sensing horizon
+beyond the line of sight by exchanging spatial information over
+Vehicle-to-Vehicle (V2V) links. Existing benchmarks, however, almost universally
+assume LiDAR as the sensing modality, leaving the feasibility of cooperation
+built on low-cost \emph{passive stereo} cameras uncharacterised. This thesis
+investigates whether a cooperative perception system relying exclusively on
+stereo cameras can yield a measurable and characterisable improvement in
+three-dimensional localisation over single-agent stereo perception, and what the
+operating limits of such an approach are.
+
+A four-stage pipeline is proposed and validated under a V-model development
+process: dense stereo depth estimation, 2D object detection, lifting of
+detections to 3D position, and a decentralised object-level (late) fusion layer
+that registers and merges the independent observations of two cooperating
+agents. Guided by the range-dependent, quadratically growing error of stereo
+triangulation, the single-vehicle chain deliberately outputs 3D \emph{position}
+rather than full 3D bounding boxes. A dual-dataset strategy exercises the
+single-vehicle chain on real driving stereo imagery (KITTI) and the cooperative
+layer on simultaneous, occlusion-truthful multi-agent recordings from the CARLA
+simulator.
+
+Empirical characterisation shows that the headline benefit of stereo
+cooperation is \emph{coverage} rather than localisation: late fusion recovers
+objects hidden in each agent's blind spots and raises recall substantially for
+both agents symmetrically, while localisation error remains essentially flat
+because the two viewpoints share a narrow viewing-angle separation that
+precludes effective triangulation. The work thus establishes a baseline for
+late fusion operating strictly on stereo-sourced inputs and maps the conditions
+under which cooperative gains hold.
+
+\vspace{0.6cm}
+\noindent\textbf{Keywords:} cooperative perception, V2V communication, stereo
+vision, depth estimation, 3D object localisation, late fusion, autonomous
+driving, KITTI, CARLA.

@@ -1,0 +1,34 @@
+\chapter{Notation}
+\label{app:notation}
+
+This appendix collects the notation used throughout the methodology
+(Chapter~\ref{ch:methodology}, Sections~\ref{sec:stage1}--\ref{sec:stage4}).
+
+\begin{table}[htbp]
+\centering
+\caption{Notation used throughout the methodology (Sections~\ref{sec:stage1}--\ref{sec:stage4}).}
+\label{tab:notation}
+\begin{tabularx}{\textwidth}{@{}lL@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$f,\; B,\; d$ & focal length (px), stereo baseline (m), disparity (px) \\
+$Z$ & depth $=$ camera-frame forward coordinate (m) \\
+$(u, v)$ & pixel coordinates in the image \\
+$f_x, f_y$ & camera focal lengths along the image axes (px); $f_x \equiv f$ \\
+$(c_x, c_y)$ & principal point of the left camera (px) \\
+$(X, Y, Z)$ & 3D point in the camera frame (m): $X$ right, $Y$ down, $Z$ forward \\
+$\rho$ & depth coverage ratio of a detection region, $\rho \in [0, 1]$ \\
+$c_{2D},\; c_{3D}$ & 2D-detection confidence and propagated 3D confidence \\
+$c_A, c_B,\; \hat{c}$ & the two agents' confidences and the fused confidence \\
+$\tau$ & per-class BEV matching distance threshold (m) \\
+$d_{\text{BEV}}$ & bird's-eye-view (ground-plane) centre distance (m) \\
+$T_{W,A},\; T_{W,B}$ & world-from-camera transforms of Vehicles A and B ($4\times4$) \\
+$T_{B \rightarrow A}$ & rigid transform mapping B's camera frame into A's ($4\times4$) \\
+$M$ & fixed axis map from the vehicle frame to the camera frame \\
+$R$ & rotation ($3\times3$) block of a homogeneous transform \\
+$\theta,\; \hat{\theta}$ & object heading and fused heading (rad) \\
+$\tilde{p}$ & a 3D point in homogeneous coordinates \\
+\bottomrule
+\end{tabularx}
+\end{table}

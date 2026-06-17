@@ -1,0 +1,566 @@
+\chapter{Literature Review and State-of-the-Art}
+\label{ch:sota}
+
+Environmental perception in autonomous driving has evolved substantially since
+the early rule-based systems, progressing from monocular detection pipelines on
+individual vehicles toward fully learned, multi-agent systems capable of
+reasoning about shared perceptual information in real time. Modern cooperative
+perception sits at the intersection of three distinct research fields that have
+individually achieved significant maturity: stereo-based 3D perception, deep
+learning for object detection, and collaborative perception networks. This
+chapter surveys the current state of the art across each of these three domains,
+tracing the trajectory of each field and identifying where the boundaries of
+current methods lie.
+
+\section{Stereo-Based 3D Perception}
+\label{sec:stereo3d}
+
+Autonomous driving platforms require a real-time, metric three-dimensional
+representation of their surroundings before any higher-level task such as object
+tracking, trajectory prediction, or path planning can proceed reliably. How that
+representation is obtained from onboard sensors is a non-trivial design choice,
+and one that has shifted considerably as the field has matured. This section
+examines the principal sensing paradigms in autonomous perception, then traces
+the algorithmic evolution of stereo depth estimation methods.
+
+\subsection{Sensor Modalities}
+
+To capture the spatial layout of an environment, modern autonomous perception
+systems primarily utilise one of three core sensor configurations: active LiDAR arrays, passive monocular cameras, or passive
+stereo cameras. Each modality presents a fundamentally distinct engineering
+compromise across financial cost, hardware reliability, semantic density, and
+geometric depth accuracy~\cite{valverde2025}.
+
+Active sensing via LiDAR has long served as the benchmark for metric 3D
+perception. By emitting localised infrared laser pulses and calculating the
+direct Time-of-Flight (ToF) of their reflections, LiDAR sensors generate sparse
+but highly accurate point clouds that are largely invariant to ambient lighting
+conditions or shadows. This direct coordinate measurement eliminates downstream
+geometric ambiguity, providing high metric precision at ranges exceeding one
+hundred metres. Despite these geometric advantages, active LiDAR sensing suffers
+from severe operational constraints: high-resolution automotive units remain
+prohibitively expensive for mass-market deployment, carry significant power
+consumption, rely on mechanical or solid-state components vulnerable to physical
+wear, and produce point clouds inherently devoid of semantic texture, rendering
+them incapable of capturing colour, reading signage, or interpreting traffic
+state.
+
+Conversely, monocular camera systems offer the most affordable and
+computationally streamlined alternative for automotive perception. Single cameras
+provide dense, high-resolution RGB images that contain rich semantic textures,
+allowing deep neural networks to classify objects, detect lane boundaries, and
+interpret complex scene contexts. However, extracting 3D metric coordinates from
+a single 2D image plane is a mathematically ill-posed inverse problem. Because
+the projection from a 3D world space to a 2D pixel grid discards the depth
+dimension entirely, monocular systems suffer from fundamental scale
+ambiguity~\cite{huang2025monocular}. To estimate distance, monocular deep
+learning models must rely heavily on statistical priors and contextual cues
+learned during training, such as assuming a vehicle's standard height or
+ground-plane consistency. Consequently, when confronted with out-of-distribution
+obstacles, unusual vehicle profiles, or severe ego-vehicle pitch, these models
+degrade substantially, with published depth errors typically falling in the
+15--30\% range and accuracy degrading further beyond 50 metres as perspective
+cues become insufficient to resolve absolute scale~\cite{huang2025}.
+
+Stereo vision recovers absolute metric depth through passive geometric
+triangulation across two synchronised, horizontally offset cameras separated by a
+fixed known baseline, requiring no learned priors about object appearance or
+scale. This geometry preserves the dense semantic richness and low hardware cost
+of camera-based sensing while establishing a physically grounded foundation for
+depth recovery. Unlike learned monocular approaches, stereo triangulation is
+distribution-agnostic: it applies equally to any rigid object in the scene
+regardless of whether that object class appeared in the depth model's training
+data, making it a practical and scalable baseline for single-agent 3D perception
+in cost-constrained deployments~\cite{huang2025}.
+
+\subsection{Stereo Depth Estimation}
+\label{sec:stereodepth}
+
+Extracting reliable depth from a stereo pair requires solving a precise geometric
+problem that has driven decades of algorithmic development. The foundational
+objective of a computational stereo engine is to solve the correspondence
+problem: identifying the exact spatial location of a point in a secondary camera
+frame that matches a given pixel in the primary camera frame. By assuming a
+rectified camera arrangement where the optical axes are parallel, the search
+space for a matching pixel can be mathematically constrained from a
+two-dimensional grid to a one-dimensional horizontal epipolar line. The
+horizontal pixel displacement between these matched points represents the
+disparity, which inversely determines the absolute metric depth of the scene
+relative to the camera's baseline and focal length.
+
+Historically, the computer vision literature divided dense disparity estimation
+into local and global optimisation paradigms~\cite{scharstein2002}. Local
+methods, such as Block Matching (BM), compute correspondence costs over isolated
+support windows using pixel-level intensity metrics. While computationally
+efficient, local matching degrades significantly in textureless regions or under
+uniform illumination. Global matching paradigms address these spatial ambiguities
+by introducing mathematical energy minimisation functions. Algorithms like
+Semi-Global Matching (SGM)~\cite{hirschmuller2008} approximate global 2D
+optimisation by aggregating dynamic programming paths across multiple 1D
+orientations through the image grid. SGM balances per-pixel matching accuracy
+with contextual smoothness constraints, making it a practical baseline for
+real-time stereo matching in robotics and automotive applications. However, it
+still exhibits severe optimisation failures when confronted with reflective
+materials, fine structural boundaries, or repeated patterns.
+
+The integration of deep learning drastically shifted the stereo landscape by
+replacing hand-crafted cost functions with data-driven representations.
+Influential deep architectures such as PSMNet~\cite{chang2018} introduced the
+concept of the 3D visual cost volume. Instead of matching raw pixel intensities,
+these networks employ Siamese Convolutional Neural Networks (CNNs) to extract
+dense feature descriptors from both views, which are concatenated across a range
+of predefined candidate disparities to construct a high-dimensional cost volume.
+Volumetric 3D convolutions are then applied to aggregate spatial and disparity
+context over the volume to regress a smooth disparity map.
+
+To refine this volumetric approach, the field transitioned toward iterative
+recurrent architectures, an approach exemplified by RAFT-Stereo~\cite{lipson2021}.
+RAFT-Stereo extracts multi-scale feature maps, constructs a multi-scale 4D
+correlation cost volume, and utilises a Gated Recurrent Unit (GRU) block to
+iteratively look up and update the disparity field. While RAFT-Stereo achieved
+unprecedented accuracy on fine structures across major benchmarks, maintaining
+and fetching data from multi-scale 4D cost volumes still imposes significant
+memory bottlenecks on embedded automotive hardware.
+
+To completely bypass the computational overhead imposed by volumetric
+representations, contemporary research has shifted toward cost-volume-free,
+recurrent warping architectures, an approach exemplified by
+WAFT-Stereo~\cite{wang2026}. Rather than building or maintaining a static,
+memory-heavy cost structure, WAFT-Stereo frames stereo matching as a continuous
+field transformation, iteratively warping feature maps from one view directly
+onto the other and utilising localised field transforms to resolve geometric
+misalignments progressively. By relying strictly on high-resolution warping
+mechanisms rather than dense volumetric convolutions or correlation lookups, this
+framework holds a top-ranking position on ETH3D, Middlebury, and KITTI across all
+metrics, while running 1.8 to 6.7 times faster than competitive
+methods~\cite{wang2026}, providing a highly scalable depth engine for downstream
+detection tasks.
+
+\Cref{tab:stereo} provides a comparative summary of this algorithmic evolution
+across four representative methodologies, contrasting their core paradigms, error
+metrics on the KITTI 2015 benchmark, operational latencies, and deployment
+hardware configurations.
+
+\begin{table}[ht]
+\centering
+\caption{Representative stereo depth estimation methods on the KITTI 2015 benchmark.}
+\label{tab:stereo}
+\renewcommand{\arraystretch}{1.6}
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l l c c l}
+\toprule
+\thead{Method} & \thead{Paradigm} &
+\thead{KITTI 2015 \\ D1-all} &
+\thead{Latency} & \thead{Hardware} \\
+\midrule
+SGBM \cite{hirschmuller2008}
+  & Classical path aggregation
+  & $\sim$8--12\% & $<$25\,ms & Multi-core CPU \\[4pt]
+PSMNet \cite{chang2018}
+  & CNN + 3D cost volume
+  & 2.32\% & $\sim$410\,ms & NVIDIA GTX 1080Ti \\[4pt]
+RAFT-Stereo \cite{lipson2021}
+  & Recurrent + 4D correlation volume
+  & 2.42\% & $\sim$380\,ms & NVIDIA RTX 3090 \\[4pt]
+WAFT-Stereo \cite{wang2026}
+  & Recurrent + feature warping (no cost volume)
+  & 1.28\% & $\sim$100\,ms & NVIDIA L40 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+
+
+
+\section{Single-Vehicle 3D Object Detection}
+\label{sec:single3d}
+
+Once a dense depth map is generated from the ego-vehicle's stereo vision engine,
+the perception pipeline must use this depth information to localise and classify
+surrounding vehicles. Single-vehicle 3D object detection focuses on predicting a
+bounding box defined by a seven-degree-of-freedom state vector: a 3D centre
+coordinate $(x, y, z)$, physical dimensions (height, width, length), and an
+orientation angle (yaw). Within the autonomous vehicle literature, deep
+architectures handle this localisation task through two fundamentally distinct
+structural strategies. The first is a multi-stage lifting paradigm, which relies
+on an explicit 2D image-plane detector to isolate objects before projecting them
+into 3D coordinates using calculated depth data. The second is an end-to-end
+paradigm encompassing volumetric and transformer-based architectures, which
+bypasses intermediate 2D detections entirely, directly mapping raw stereo inputs
+to 3D spatial parameters. This section first evaluates the core 2D detection
+architectures that serve as the front-end for lifting workflows, before examining
+both multi-stage pseudo-LiDAR approaches and end-to-end direct regression
+systems.
+
+\subsection{2D Object Detection as a Front-End for 3D Lifting}
+
+In multi-stage perception frameworks, a 2D image-plane detector serves as a
+structural prerequisite: it must first isolate objects within the RGB image
+plane, whose boundaries are then used to crop depth maps and define the spatial
+frustum passed to the 3D lifting stage. Because any localisation error at this
+stage directly bounds the accuracy of the entire pipeline, the choice of 2D
+backbone carries significant architectural weight. The literature primarily
+offers three configurations for image-plane localisation: classical two-stage
+proposal networks, modern single-shot convolutional networks, and real-time
+end-to-end vision transformers.
+
+The canonical two-stage detection baseline is Faster R-CNN~\cite{ren2015}. This
+architecture established the foundational paradigm of separating localisation into
+a sequential processing pipeline. The first stage employs a dedicated Region
+Proposal Network (RPN) to scan dense feature maps and generate coarse bounding
+box candidates. The second stage then utilises region-of-interest (RoI) pooling
+layers to extract these features, passing them to downstream heads for final
+categorical classification and bounding box regression. While Faster R-CNN
+consistently achieved superior localisation precision and robust handling of
+multi-scale objects compared to single-stage methods of the same period, its
+multi-stage design introduces computational bottlenecks on embedded hardware,
+making real-time deployment on automotive hardware challenging.
+
+To address these latency constraints, the field shifted toward one-stage,
+single-shot detectors, exemplified by the YOLO family (You Only Look
+Once)~\cite{redmon2016}. One-stage architectures eliminate the region proposal
+step entirely, framing object localisation as a direct, end-to-end regression
+problem over a dense spatial grid. While early iterations relied on rigid,
+hand-crafted anchor boxes that struggled with objects of varying scales and
+aspect ratios, the family has evolved continuously, progressively adopting
+anchor-free regression heads and increasingly expressive backbone designs. The
+most recent iteration, YOLOv12, builds on this trajectory by introducing a
+lightweight area attention module and a Residual Efficient Layer Aggregation
+Network (R-ELAN), achieving incremental mAP gains over its predecessor while
+matching its inference speed on standard GPU hardware~\cite{tian2025}, continuing
+to narrow the historical trade-off between inference speed and detection accuracy.
+
+Beyond convolutional architectures, contemporary multi-stage frameworks have
+increasingly adopted Vision Transformers (ViTs), specifically the DETR (DEtection
+TRansformer) lineage, as their localisation engine~\cite{carion2020}. While
+convolutional models rely on localised receptive fields and hand-crafted
+post-processing heuristics like Non-Maximum Suppression (NMS) to clear out
+redundant, overlapping boxes, DETR models frame 2D localisation as a direct
+set-prediction problem. Utilising multi-head self-attention mechanisms, these
+networks capture global contextual dependencies and long-range cross-object
+interactions across the entire image plane, matching learned object queries to
+ground-truth boxes via bipartite matching. With modern adaptations like
+RT-DETR~\cite{lv2024} drastically optimising the computational latency of these
+attention maps, transformer-based frameworks produce exceptionally clean,
+precisely bounded region crops without spatial suppression artefacts, a property
+that directly improves the quality of the depth frustum passed to the 3D lifting
+stage.
+
+\Cref{tab:detectors} compares the three architectural families across detection
+accuracy, inference latency, and primary deployment context. Latency values for
+YOLOv12 and RT-DETR are measured using TensorRT FP16 (TRT FP16) optimisation on
+an NVIDIA T4 GPU; Faster R-CNN latency is measured in standard PyTorch on a server
+GPU.
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of major 2D object detection models on the COCO benchmark.}
+\label{tab:detectors}
+\renewcommand{\arraystretch}{1.6}
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l l c c l}
+\toprule
+\thead{Model} & \thead{Family} &
+\thead{COCO \\ mAP@0.5:0.95} &
+\thead{Latency} & \thead{Design Priority} \\
+\midrule
+Faster R-CNN \cite{ren2015}
+  & Two-stage proposal
+  & $\sim$37\% & 100--200\,ms & Precision-first, latency-tolerant \\[4pt]
+YOLOv12 \cite{tian2025}
+  & One-stage anchor-free + attention
+  & $\sim$51.8\% & $\sim$2.5\,ms TRT FP16 & Speed-first, edge deployment \\[4pt]
+RT-DETR \cite{lv2024}
+  & Transformer set prediction
+  & $\sim$53.0\% & $\sim$9.3\,ms TRT FP16 & Transformer precision at real-time speed \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Stereo-Based 3D Object Detection}
+
+While image-plane analysis extracts rich two-dimensional semantic maps,
+autonomous vehicles require structural reasoning in native three-dimensional
+coordinate frames. Resolving the extra spatial dimension from stereo camera
+setups has produced two structurally distinct paradigms in the literature, driven
+by a fundamental tension between geometric interpretability and end-to-end
+computational efficiency.
+
+\paragraph{a. Two-Stage Lifting and Pseudo-LiDAR Approaches.}
+The two-stage lifting paradigm connects image-plane processing to 3D geometric
+interpretation by decoupling the pipeline into explicit depth generation and
+point-cloud detection components. This approach was popularised through the
+Pseudo-LiDAR framework~\cite{wang2019pseudolidar}, which applies back-projection
+to estimated disparity maps. Utilising camera calibration matrices, the network
+converts every pixel with a known depth value directly into a concrete 3D point
+cloud within the physical world coordinate frame. Once this coordinate
+transformation occurs, the generated Pseudo-LiDAR point cloud mimics the
+structural format of LiDAR point clouds. Consequently, these architectures can
+directly deploy existing 3D point-cloud detection models, such as
+PointRCNN~\cite{shi2019}, to group spatial points and regress 3D bounding boxes.
+Subsequent iterations like Pseudo-LiDAR++ refined this by using sparse physical
+measurements to correct depth errors, which naturally scale quadratically with
+actual physical distance~\cite{you2020}. While this explicit separation makes the
+overall system highly interpretable and modular, it introduces substantial
+deployment overhead because the latency of the stereo depth estimation engine and
+the point-cloud processing backend stack sequentially.
+
+\paragraph{b. End-to-End Volumetric and Transformer Architectures.}
+To eliminate the computational bottlenecks and error propagation of multi-stage
+pipelines, contemporary research focuses on end-to-end architectures that bypass
+explicit point-cloud reconstruction. Early approaches within this paradigm built
+explicit geometric volumes directly from stereo features, training unified
+networks to jointly estimate depth and detect objects without intermediate
+pseudo-LiDAR conversion. Early geometry-aware methods such as
+DSGN~\cite{chen2020dsgn} constructed plane-sweep stereo volumes and processed them
+with 3D convolutions to jointly reason about depth and object presence within a
+unified feature space. Building on this geometric grounding,
+LIGA-Stereo~\cite{guo2021} introduced LiDAR-guided supervision to strengthen
+stereo feature learning, achieving high localisation accuracy on the KITTI
+benchmark. However, the dense geometric volumes required by these architectures
+impose significant memory and latency overhead, making real-time deployment on
+automotive hardware difficult.
+
+To overcome this latency barrier, contemporary frameworks like
+StereoDETR~\cite{mu2025} decouple the network into two distinct branches: a fast
+monocular DETR branch that regresses object scale, orientation, and spatial
+queries, and a highly efficient stereo branch that leverages low-cost,
+multi-scale disparity features to predict object-level depth maps. Coupled through
+a differentiable depth sampling strategy, and handling occlusion through a
+constrained supervision strategy that requires no extra annotations, StereoDETR
+achieves real-time inference and is the first stereo-based method to surpass
+monocular approaches in speed, while establishing competitive state-of-the-art
+accuracy on the KITTI benchmark.
+
+\section{Collaborative Perception via V2V Communication}
+\label{sec:collab}
+
+While modern single-vehicle 3D perception architectures have achieved strong
+localisation accuracy, they remain inherently constrained by the physical limits
+of a single perspective. Ego-vehicle sensors are fundamentally vulnerable to
+long-range geometric degradation and critical blind spots caused by line-of-sight
+occlusions.
+
+Vehicle-to-Vehicle (V2V) cooperative perception addresses these single-agent
+limitations by combining spatial data from multiple connected vehicles. By
+sharing perception data across different vantage points, vehicles can mutually
+resolve occlusions and extend their effective detection ranges. The primary
+architectural variation among cooperative networks lies in the abstraction level
+of the shared data, which is universally categorised into early, intermediate,
+and late fusion paradigms. This section first examines these three fusion
+paradigms, then traces the algorithmic milestones through which the field has
+evolved.
+
+\subsection{Fusion Paradigms}
+
+The point within a neural network pipeline where data from neighbouring vehicles
+is aggregated dictates the system's accuracy, bandwidth efficiency, and practical
+deployment feasibility. The literature organises these methods into three distinct
+approaches based on the level of information abstraction.
+
+\paragraph{Early Fusion (Raw Data Aggregation).}
+In early fusion pipelines, vehicles transmit raw, unprocessed sensor outputs, such
+as stereo-derived dense depth maps or uncompressed point clouds, directly to the
+ego-vehicle. The receiving agent aligns these raw inputs into its own spatial
+coordinate system and processes the combined dense representation through a single
+3D detection backbone. While early fusion preserves complete spatial features and
+yields high theoretical localisation accuracy, it is highly impractical for
+real-world vehicular setups. Transmitting raw, high-resolution visual data
+generates massive bandwidth demands that easily saturate direct communication
+channels, leading to severe transmission latency and data loss.
+
+\paragraph{Intermediate Fusion (Feature-Level Aggregation).}
+To balance bandwidth and performance, intermediate fusion strategies extract
+multi-scale neural network feature maps, such as Bird's-Eye-View tensors, on
+individual vehicles before transmission. Neighbouring vehicles exchange these
+compressed latent features, which are then fused using spatial attention
+mechanisms or graph neural networks. While intermediate fusion reduces bandwidth
+relative to raw data, it introduces architectural coupling: cooperating vehicles
+must share compatible backbone designs to ensure exchanged feature tensors align
+semantically and can be combined by the downstream detection heads.
+
+\paragraph{Late Fusion (Object-Level Aggregation).}
+Late fusion operates at the highest level of data abstraction, completely
+decoupling the individual perception pipelines of cooperating vehicles. Each
+vehicle runs its own independent 3D object detection engine to generate a
+finalised list of 3D bounding boxes, complete with spatial coordinates,
+dimensions, orientations, and class confidence scores. Vehicles then transmit only
+these low-dimensional object-level parameters across the V2V link. The receiving
+ego-vehicle applies spatial transformation matrices to project the incoming
+bounding boxes into its own coordinate frame, subsequently deploying clustering
+algorithms, such as Intersection-over-Union matching or Kalman filtering, to fuse
+duplicate detections and fill occluded blind spots. Because it transfers only
+lightweight bounding box coordinates, late fusion minimises communication
+bandwidth requirements and provides architectural flexibility, allowing
+heterogeneous vehicle types with entirely different sensor setups and internal
+detection backbones to collaborate without requiring shared neural network layers.
+
+\subsection{Evolution of Collaborative Perception Systems}
+
+To understand the current state of the art in multi-vehicle cooperative
+perception, it is necessary to trace the algorithmic milestones that shaped the
+field. The literature has evolved through a continuous cycle of establishing
+fusion paradigms, identifying communication bottlenecks, and addressing the gap
+between synthetic simulation and real-world deployment.
+
+The foundational shift toward deep collaborative perception began with
+V2VNet~\cite{wang2020v2vnet}. Prior to this work, cooperative approaches relied on
+raw data sharing or disconnected object-level exchanges. V2VNet established the
+core intermediate fusion paradigm, proving that vehicles could compress spatial
+information into latent neural network representations and aggregate them using
+graph neural networks. While it achieved significant accuracy gains over
+single-vehicle baselines, V2VNet was evaluated purely on private synthetic
+datasets where communication was assumed to be flawless and unconstrained.
+
+This reliance on idealised conditions exposed a major structural void: the lack of
+standardised benchmarking. OPV2V resolved this by introducing the first
+open-source multi-vehicle cooperative perception benchmark and simulation
+dataset~\cite{xu2022opv2v}. By providing a unified evaluation framework, OPV2V
+allowed researchers to directly compare different fusion strategies under
+identical conditions. Crucially, this benchmark exposed that dense intermediate
+feature sharing incurred an unsustainably high communication bandwidth cost,
+identifying data volume as the primary bottleneck at the time.
+
+To alleviate this communication burden, Where2comm introduced the concept of
+spatial communication efficiency~\cite{hu2022}. Recognising that large portions of
+a vehicle's feature map contain redundant or empty spatial information, Where2comm
+utilised a spatial confidence map to assess the perceptual informativeness of each
+spatial region. Vehicles used this mechanism to dynamically select and transmit
+only the most critical, high-entropy perception features, demonstrating that
+communication volume could be drastically reduced without degrading downstream 3D
+detection accuracy. CoBEVT generalised and scaled this selection mechanism by
+introducing a unified transformer architecture~\cite{xu2022cobevt}. Instead of
+relying on confidence-based spatial selection alone, CoBEVT designed a multi-agent
+Bird's-Eye-View transformer that leveraged sparse axial self-attention, allowing
+the ego-vehicle to perform context-aware spatial fusion across multiple connected
+agents simultaneously while maintaining an efficient computational profile.
+
+Despite these rapid architectural advancements, nearly all cooperative perception
+research remained confined to synthetic simulators. V2V4Real confronted this
+systemic limitation by releasing the first large-scale real-world cooperative
+dataset collected by a physical connected vehicle fleet~\cite{xu2023v2v4real}.
+V2V4Real exposed and quantified a significant sim-to-real gap, revealing that
+real-world localisation errors, temporal asynchrony, and hardware heterogeneity
+caused severe spatial misalignment that drastically degraded the performance of
+tightly coupled intermediate feature fusion networks. Most recently, the
+TUMTraf-V2X dataset extended the boundary of deployment-grade
+evaluation~\cite{zimmer2024}. Collecting 2,000 labelled point clouds and 5,000
+labelled images from five roadside and four onboard sensors across challenging
+real-world scenarios including traffic violations, near-miss events, overtaking,
+and U-turns, TUMTraf-V2X demonstrated that cooperative perception must operate
+reliably across heterogeneous sensor configurations and complex driving manoeuvres
+to be considered deployment-grade. Subsequent work has continued to push
+deployment-grade evaluation further, with datasets such as
+CATS-V2V~\cite{li2025catsv2v} targeting adverse weather and lighting conditions,
+and UrbanIng-V2X~\cite{sekaran2025urbaningv2x} extending cooperative sensing
+across multiple intersections with heterogeneous vehicle and infrastructure
+agents.
+
+\section{Open Challenges and Research Gaps}
+\label{sec:gaps}
+
+A critical evaluation of contemporary literature reveals unresolved challenges at
+every level of the stereo cooperative perception stack. At the single-vehicle
+level, stereo depth estimation remains unreliable in textureless regions and
+degrades significantly with distance, while stereo-based 3D detection struggles
+with severe occlusion and sparse geometric coverage. These upstream limitations
+propagate directly into any downstream fusion pipeline, and are further compounded
+by unresolved architectural gaps that restrict the transition of cooperative
+perception from simulated environments to dependable real-world deployment. This
+section synthesises the principal open challenges across the cooperative
+perception stack.
+
+\subsection{Communication Latency and Temporal Asynchrony}
+
+The foundational assumption of multi-agent spatial coordination is that shared
+perception data can be instantaneously mapped into a unified coordinate space. In
+practical deployments, however, Vehicle-to-Vehicle (V2V) communication introduces
+highly variable network propagation and queuing delays. Feature maps or finalised
+bounding boxes transmitted with even a minor 200\,ms latency profile may
+correspond to a physical spatial position that the transmitting vehicle has
+already vacated. While frameworks such as SyncNet~\cite{lei2022} have attempted to
+mitigate this temporal latency by estimating motion-compensated features to
+predict object trajectories during network delays, the problem remains unresolved
+under highly dynamic ego-motion. When vehicles undergo rapid manoeuvres such as
+sudden braking, aggressive overtaking, or tight cornering at urban intersections,
+idealised latency-compensation heuristics collapse, resulting in phantom
+detections and duplicated tracks within the fused perception map.
+
+\subsection{Pose Uncertainty and the Noisy-on-Noisy Alignment Problem}
+
+Fusing spatial coordinates across a distributed network of moving vehicles
+requires absolute precision regarding each agent's localised position within a
+common global reference frame. Real-world Global Navigation Satellite System
+(GNSS) localisation errors of even 1 to 2 metres can cause catastrophic geometric
+misalignments in the aggregated tracking space. Although advanced frameworks like
+CoAlign~\cite{lu2023} introduce robust pose-correction modules to optimise
+geometric consistency, these systems suffer severe degradation in GNSS-degraded
+environments such as deep urban canyons, underpasses, or tunnels.
+
+This spatial alignment challenge is severely compounded within stereo-based
+collaborative systems. Unlike active LiDAR sensors, which provide highly precise,
+deterministic point-cloud measurements across a standard operating radius, stereo
+vision systems carry inherent depth estimation noise that scales quadratically
+with physical distance. Consequently, attempting to aggregate coordinate fields
+from multiple stereo-equipped vehicles creates a compounded noisy-on-noisy spatial
+alignment problem: because the baseline error models fluctuate independently
+across each vehicle's unique perspective and distance to the target, standard
+alignment techniques optimised for LiDAR-centric systems are structurally
+unequipped to handle this geometric variance.
+
+\subsection{Fleet Heterogeneity and Cross-Model Dependencies}
+
+A restrictive bottleneck in contemporary cooperative perception is the systemic
+reliance on software and hardware homogeneity across collaborating nodes. The vast
+majority of state-of-the-art intermediate fusion networks require every
+participating agent to execute identical deep learning model backbones, resolution
+parameters, and feature extraction layers to ensure that the exchanged latent
+tensors align semantically. In a realistic deployment scenario, autonomous vehicle
+fleets are inherently heterogeneous, consisting of vehicles from different
+manufacturers running entirely distinct perception setups. While decentralised
+late fusion and head-level fusion models such as HEAD~\cite{qu2024} provide a
+model-agnostic alternative, existing literature frequently trades architectural
+flexibility for a reduction in localisation accuracy. Developing a cooperative
+framework that maintains high spatial fidelity while seamlessly ingesting
+detections from completely heterogeneous single-agent architectures remains an
+open engineering challenge.
+
+\subsection{Late Fusion Behaviour Under Stereo-Sourced Inputs}
+
+Model-agnostic late fusion frameworks, including HEAD~\cite{qu2024} and prior
+object-level aggregation methods, are evaluated exclusively on LiDAR-sourced
+bounding boxes, whether drawn from real-world datasets such as
+V2V4Real~\cite{xu2023v2v4real} and TUMTraf-V2X~\cite{zimmer2024}, or from
+simulated environments such as OPV2V~\cite{xu2022opv2v}. LiDAR-sourced boxes carry
+positional uncertainty that is largely range-independent within a sensor's
+operating envelope, a property that clustering algorithms such as IoU matching and
+Kalman filtering implicitly rely upon when resolving duplicate detections across
+agents.
+
+Stereo-sourced bounding boxes violate this assumption. Stereo depth error grows
+quadratically with distance, meaning positional uncertainty in stereo-sourced
+boxes is inherently range-dependent and perspective-specific across agents. When a
+late fusion layer receives boxes from two stereo-equipped vehicles with different
+baselines, focal lengths, and target distances, the noise profiles of the incoming
+detections are structurally heterogeneous in a way that LiDAR-calibrated fusion
+logic does not account for.
+
+The empirical behaviour of late fusion pipelines operating strictly on
+stereo-sourced inputs has not been characterised in the literature: how precision
+degrades under range-dependent noise, how sensitive fusion is to inter-vehicle
+baseline variation, and how detection quality evolves as target distance increases
+all remain open questions. Establishing this baseline is a necessary step toward
+designing cooperative perception systems that can operate effectively without
+LiDAR infrastructure.
+
+\bigskip
+\noindent The three research domains surveyed in this chapter form a natural
+end-to-end pipeline, yet their integration under a passive stereo sensing paradigm
+leaves critical gaps at every stage: from the reliability of stereo depth under
+real-world conditions, to the propagation of range-dependent noise through 3D
+lifting, to the behaviour of cooperative fusion operating without LiDAR-sourced
+inputs. The following chapter presents the system architecture developed to
+address these gaps.

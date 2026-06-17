@@ -1,0 +1,348 @@
+\chapter{Experimental Setup and Simulation Environment}
+\label{ch:experimental}
+
+Chapter~\ref{ch:methodology} presented the architecture of the four-stage pipeline
+and the V-model discipline under which it was built. This chapter specifies the
+conditions under which that pipeline is exercised and measured: the datasets that
+feed it, the simulation environment that supplies simultaneous multi-agent ground
+truth, the concrete model and algorithm configurations of each stage, and the
+evaluation metrics against which every stage is scored. The results obtained under
+this setup are reported and discussed in Chapter~5; the present chapter establishes
+\emph{what} is measured and \emph{how}, so that those results are reproducible and
+interpretable.
+
+The experimental design is a direct consequence of the dual-dataset strategy of
+Section~\ref{sec:data}. The single-vehicle perception chain (Stages~1--3) is
+exercised on real driving imagery from the KITTI benchmark suite, the only source
+that can confirm camera-only perception on genuine sensor data. The cooperative
+layer (Stage~4) is exercised on the CARLA simulator, the source that can provide
+two vehicles observing one scene at one instant with exact relative pose and
+occlusion-truthful per-agent visibility. Each dataset is described in the role it
+serves, followed by the per-stage configurations and the metric definitions.
+
+\section{Implementation and Software Environment}
+\label{sec:environment}
+
+The pipeline is implemented in Python, with each stage as a standalone, command-line
+runnable module that communicates with its neighbours only through on-disk artifacts
+(disparity maps, detection files, lifted-position files), consistent with the
+modularity requirement (NFR1). The principal third-party components are OpenCV
+(classical stereo matching and image I/O), PyTorch and the HuggingFace Transformers
+library (the learned depth and detection models), NumPy and Shapely (geometry), and
+MLflow (experiment tracking).
+
+Two cross-cutting properties of the environment are essential to the validity of the
+reported results:
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{Determinism.} The random seeds of the \texttt{random}, NumPy, and
+  PyTorch libraries are fixed to $42$ at every entry point. Combined with the
+  configuration-driven design --- every operational value (paths, thresholds, model
+  choices, tuned parameters) lives in a per-stage YAML configuration file rather
+  than in code --- this makes each run reproducible from its recorded configuration
+  (NFR2).
+  \item \textbf{Experiment tracking.} Every run logs its parameters and resulting
+  metrics to a persistent MLflow store, so that no result exists only as transient
+  console output and any reported figure can be traced back to the run that produced
+  it.
+\end{itemize}
+
+All experiments in this work were run on \textbf{CPU only}, with no GPU
+acceleration. This constraint is itself a meaningful part of the setup: it reflects
+the cost-constrained, camera-based deployment scenario motivating the thesis, and it
+directly shapes the runtime trade-off between the classical and learned depth
+estimators discussed in Section~\ref{sec:stage1cfg}.
+
+\section{Real-Image Stereo Dataset: KITTI}
+\label{sec:kitti}
+
+The single-vehicle chain is developed and validated on the KITTI vision benchmark
+suite~\cite{geiger2012kitti}, a standard real-world autonomous-driving dataset
+recorded from a stereo camera rig mounted on a moving vehicle. Two of its splits are
+used, each matched to the stages it can validate.
+
+\subsection{Object split (Stages 1--2)}
+
+The object detection split provides individual stereo frames with rectified
+left/right images, per-frame camera calibration, dense disparity ground truth, and
+labelled 2D object boxes. It is used to validate Stage~1 (depth) and Stage~2 (2D
+detection) in isolation. The validation reported in Chapter~5 uses the first ten
+frames of the split (\texttt{000000}--\texttt{000009}); the disparity ground truth
+of this split is what makes a direct, per-pixel depth-accuracy measurement possible.
+
+\subsection{Tracking split (Stage 3)}
+
+Validating the lifting stage requires \emph{3D} ground truth --- the true metric
+position of each vehicle --- which the object split does not align with its stereo
+frames. Stage~3 is therefore validated on the KITTI tracking split, whose sequences
+carry per-frame 3D object labels registered to the camera frame. The Stage~3
+evaluation in Chapter~5 uses five sequences (24 frames in total). Each 2D detection
+is lifted to a 3D position and compared against the tracking labels by 3D centre
+distance (Section~\ref{sec:metricslift}).
+
+\begin{table}[htbp]
+\centering
+\caption{KITTI conventions adopted by the pipeline.}
+\label{tab:kitti}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}lL@{}}
+\toprule
+\textbf{Item} & \textbf{Convention} \\
+\midrule
+Calibration keys & \texttt{P2}, \texttt{P3} (left/right projection matrices), \texttt{R\_rect\_00}, \texttt{Tr\_velo\_to\_cam} \\
+Stereo baseline  & recovered as $B = (t_x^{L} - t_x^{R})/f$ from \texttt{P2}/\texttt{P3} \\
+Disparity ground truth & 16-bit PNG; metric disparity $= \text{raw}/256.0$; $\text{raw}=0$ marks an invalid (no-measurement) pixel \\
+Object vertical reference & label $y$ is the \emph{bottom} of the object (centre $= y - h/2$) \\
+Coordinate frame & camera optical frame: $X$ right, $Y$ down, $Z$ forward \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{KITTI conventions}
+
+The pipeline adopts the standard KITTI conventions summarised in
+Table~\ref{tab:kitti}. Of particular note for the depth and lifting stages: the
+disparity ground truth is stored as a 16-bit image scaled by $256$, with a raw value
+of zero denoting ``no measurement'' rather than zero disparity --- the explicit
+invalid-pixel contract that Stage~1 preserves so that downstream stages never
+mistake an absent measurement for a near-infinite depth.
+
+\section{Simultaneous Multi-Agent Dataset: CARLA}
+\label{sec:carla}
+
+The cooperative layer cannot be validated on KITTI, which records only one vehicle's
+view at a time. Stage~4 is therefore exercised on data generated with the CARLA
+simulator~\cite{dosovitskiy2017carla}, which can render two vehicles observing the
+same scene at the same instant with exact, noise-free relative pose --- and,
+crucially, with per-object, per-agent visibility derived from the rendered view
+rather than guessed geometrically.
+
+\subsection{Scenario}
+
+The scenario is a single urban intersection (the CARLA \texttt{Town10HD} map)
+recorded over 300 synchronised frames, populated with traffic and two moving ego
+vehicles. The two egos form a \textbf{leader--follower} pair: Vehicle~A travels close
+to the shared traffic (median distance to the co-observed cars $\approx$~11~m) while
+Vehicle~B follows roughly $3.3\times$ further behind (median $\approx$~36~m). This
+geometry is deliberate --- it places the same vehicles at very different ranges from
+the two agents, which is exactly the heterogeneous-uncertainty condition the thesis
+sets out to study, and it furnishes a population of cars that the follower cannot
+perceive alone, i.e.\ the blind-spot recovery that cooperation is meant to address.
+
+\subsection{Per-agent recordings and data layout}
+
+Each of the two agents (\texttt{vehicle\_a}, \texttt{vehicle\_b}) contributes, per
+frame, a rectified stereo pair (\texttt{image\_left}/\texttt{image\_right}), a camera
+calibration (\texttt{calib.json}), a noise-free disparity reference
+(\texttt{disp\_noc\_0}), and its world pose (\texttt{pose.json}). A separate
+per-frame ground-truth record (\texttt{gt\_boxes}) lists every vehicle in the scene
+with its 3D box and the visibility metadata described below. This layout lets the
+same Stage~1--3 chain that runs on KITTI run unchanged on each CARLA agent (the
+detector path), after which Stage~4 fuses the two agents' outputs using the relative
+pose derived from the two \texttt{pose.json} files.
+
+\subsection{Visibility-truthful per-agent and cooperative ground truth}
+\label{sec:coopgt}
+
+The defining property of this dataset is that an object's visibility to each agent is
+\emph{occlusion-truthful}. Each ground-truth box carries the number of its pixels
+actually rendered to each agent's camera; a car counts as seen by an agent only if at
+least \texttt{min\_visible\_pixels} ($=10$) of its pixels are visible to that agent.
+Cars hidden behind buildings or other vehicles therefore correctly drop out of an
+agent's truth set --- a geometric field-of-view test would have falsely credited an
+agent with seeing them and thereby understated the cooperative benefit.
+
+From these per-agent truth sets the \textbf{cooperative ground truth} is formed as
+the union of every (non-ego) vehicle visible to A \emph{or} B, de-duplicated by
+object identity (\texttt{actor\_id}). The two ego vehicles are part of the scene but
+are not perception targets --- their poses are shared directly over the cooperative
+link --- so they are excluded from the cooperative ground truth, and an agent's
+detection of the \emph{other} ego is treated as an \textbf{ignore region} (neither a
+true nor a false positive). Over the 150 frames evaluated in Chapter~5, the
+cooperative ground truth comprises 9 distinct cars across 586 visible instances.
+
+\section{Model and Algorithm Configurations}
+\label{sec:configs}
+
+Each stage is governed by a per-stage YAML configuration. The settings that
+materially affect the results are summarised here; the full files are part of the
+codebase.
+
+\subsection{Stage 1 --- depth estimation}
+\label{sec:stage1cfg}
+
+The two interchangeable estimators of Section~\ref{sec:stage1} are configured as
+follows. The classical estimator is OpenCV Semi-Global Block
+Matching~\cite{hirschmuller2008} with a 192-pixel disparity search range, an
+$11\times11$ matching block, smoothness penalties $P_1=8$ / $P_2=32$, a left--right
+consistency check (\texttt{disp12\_max\_diff}~$=1$), a uniqueness ratio of $10\%$,
+and speckle filtering --- a configuration that yields a \emph{sparse} but
+consistency-checked disparity map. The smoothness penalties are kept intentionally
+low because KITTI scenes have sharp depth discontinuities at object boundaries that
+high penalties would over-smooth. The learned estimator is
+WAFT-Stereo~\cite{wang2026}, run as an in-process inference step from a pretrained
+checkpoint, producing a \emph{dense} (full-coverage) disparity map. On the CPU-only
+environment of Section~\ref{sec:environment} the two differ sharply in cost ---
+SGBM runs in the order of a second per image, WAFT in the order of a minute --- a
+trade-off that is itself part of the analysis.
+
+\subsection{Stage 2 --- 2D detection}
+
+Detection uses RT-DETR~\cite{lv2024} (the \texttt{rtdetr\_r50vd} checkpoint,
+$\approx$~43\,M parameters) applied to the left image, pretrained on the COCO object
+vocabulary. The relevant COCO vehicle categories are remapped onto the project's
+single target class --- \texttt{car}, \texttt{truck}, and \texttt{bus} all map to
+KITTI \texttt{Car} --- and all other categories are discarded. A confidence
+threshold of $0.5$ suppresses weak detections. Consistent with the Car-only scoping
+of Section~\ref{sec:stage2}, no pedestrian or cyclist classes are emitted.
+
+\subsection{Stage 3 --- lifting}
+
+Lifting applies the per-method depth-sampling strategy motivated in
+Section~\ref{sec:stage3}: for the sparse SGBM map, the $20^{\text{th}}$ percentile of
+valid depths within a detection region with no vertical crop; for the dense WAFT map,
+the $35^{\text{th}}$ percentile over the top $40\%$ of the box with depths nearer than
+6~m gated out as road surface. A detection with fewer than 10 valid depth pixels in
+its region is skipped rather than lifted from an empty frustum. These values are a
+single source of truth in the Stage~3 configuration, read identically by the
+pipeline and its validator.
+
+\subsection{Stage 4 --- cooperative fusion}
+
+Fusion matches A's observations against B's (registered into A's frame) greedily by
+bird's-eye-view centre distance within class, accepting a pair as the same object
+when their separation is at most $\tau_{\text{Car}}=2.0$~m. A matched pair is fused
+only if its post-registration BEV displacement is below 1.0~m; a larger displacement
+signals a faulty match or pose error (not motion, since the observations are
+simultaneous) and the pair is flagged and kept unmerged. Fused confidence follows the
+noisy-OR rule and fused position the confidence-weighted average of
+Section~\ref{sec:stage4}.
+
+\begin{table}[htbp]
+\centering
+\caption{Summary of the per-stage experimental configuration.}
+\label{tab:configsummary}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}llL@{}}
+\toprule
+\textbf{Stage} & \textbf{Component} & \textbf{Key settings} \\
+\midrule
+1 & SGBM / WAFT-Stereo & 192-px range, $11\times11$ block, $P_1/P_2=8/32$, LR-check / pretrained dense model \\
+2 & RT-DETR (\texttt{r50vd}) & COCO $\rightarrow$ Car (car/truck/bus), confidence $\ge 0.5$ \\
+3 & Lift-to-position & SGBM: p20, no crop; WAFT: p35, top-40\% crop, 6\,m gate; skip $<10$ px \\
+4 & Late fusion & BEV match $\tau_{\text{Car}}=2.0$\,m, fuse if displacement $<1.0$\,m, noisy-OR confidence \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Evaluation Metrics}
+\label{sec:metrics}
+
+Each stage is scored against ground truth in isolation, so that a failure at any
+level can be diagnosed without trusting its successors (NFR3). The metrics for each
+stage are defined below.
+
+\subsection{Stage 1 --- depth}
+
+Disparity quality is measured against the dense ground-truth disparity, over valid
+pixels only, by two standard KITTI metrics and a coverage figure:
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{End-Point Error (EPE)} --- the mean absolute disparity error in
+  pixels, $\text{EPE} = \frac{1}{N}\sum_i |d_i - d_i^{\text{GT}}|$.
+  \item \textbf{D1 error} --- the percentage of pixels whose disparity error exceeds
+  the standard KITTI outlier threshold (3~px and $5\%$ of the true disparity),
+  capturing gross mismatches rather than sub-pixel noise.
+  \item \textbf{Coverage} --- the percentage of pixels for which the estimator
+  reports a valid disparity. This distinguishes the sparse SGBM map from the dense
+  WAFT map and is essential context for the two preceding metrics, which are computed
+  over reported pixels only.
+\end{itemize}
+
+\subsection{Stage 2 --- 2D detection}
+
+Detection is scored by the standard average-precision framework. A predicted box is a
+true positive when its Intersection-over-Union (IoU) with a ground-truth box of the
+same class exceeds $0.5$. Per-class Average Precision (AP) and the mean over classes
+(mAP) are reported, together with per-class precision and recall at the fixed
+operating confidence threshold of $0.5$. Average precision is computed by 11-point
+interpolation; a reliability flag marks evaluations made on fewer than ten frames as
+small-sample estimates.
+
+\subsection{Stage 3 --- lifting to 3D position}
+\label{sec:metricslift}
+
+Because Stage~3 emits a 3D \emph{position} plus the source 2D box --- not a full 3D
+box --- it cannot be scored by 3D IoU. Instead a predicted position is matched to the
+nearest unmatched same-class ground-truth object within a 3D centre-distance
+threshold (Car~$\le 2.0$~m), greedily. From the resulting matches the pipeline
+reports precision, recall, and their harmonic mean $F_1$, alongside two localisation
+errors averaged over matched pairs: the \textbf{depth error} (error along the camera
+forward axis $Z$) and the \textbf{3D centre distance}. To expose the central
+range-dependence claim of Chapter~\ref{ch:introduction}, errors are additionally
+broken down into depth-range bins (0--10, 10--20, 20--40, and beyond~40~m).
+
+\subsection{Stage 4 --- cooperative fusion}
+\label{sec:metricsfusion}
+
+Stage~4 is evaluated against the cooperative ground truth of
+Section~\ref{sec:coopgt}. For each frame, three prediction sets are scored against
+the \emph{same} cooperative ground truth: \textbf{A-alone}, \textbf{B-alone} (B's
+single-vehicle output registered into A's frame), and \textbf{Fused}. Each set is
+matched to the cooperative ground truth by the same greedy BEV centre-distance rule
+($\tau_{\text{Car}}=2.0$~m), giving per-set precision, recall, and a bird's-eye-view
+\textbf{localisation error} over true positives. Beyond these per-set figures, the
+following metrics characterise the cooperation itself:
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item \textbf{Symmetric cooperative gain.} Because the fused scene is shared, the
+  benefit is measured for both agents against the same ground truth: A's gain from B
+  is the set of cooperative-GT objects only B saw (\texttt{b\_unique\_tp}), and B's
+  gain from A is the set only A saw (\texttt{a\_unique\_tp}), each reported as a
+  recall improvement and a count of recovered objects.
+  \item \textbf{Corroboration rate.} Of the objects co-observed by both agents, the
+  fraction that are actually merged into a single fused estimate (as opposed to
+  surviving as two separate detections). This distinguishes a genuinely
+  deduplicated scene from one that is merely a union of the two agents' detections.
+  \item \textbf{Angular separation.} The angle subtended at a co-observed car between
+  the two agents' viewing directions, reported as a diagnostic for whether
+  cross-view triangulation (which would tighten depth) is geometrically available.
+  \item \textbf{Precision--recall sweep and localisation-vs-range curve.} A PR sweep
+  over the confidence threshold traces the precision/recall trade-off of the three
+  sets, and a plot of localisation error against ground-truth range exposes how the
+  cooperative localisation behaves as targets recede.
+\end{itemize}
+
+\section{Experimental Protocol and Scope}
+\label{sec:protocol}
+
+The protocol follows directly from the V-model verification strategy: each stage is
+run and scored standalone against the ground truth of the dataset best able to test
+it, and only then is the full chain run end-to-end for a cooperating pair. Throughout,
+the two depth estimators (SGBM and WAFT-Stereo) are carried through the entire
+pipeline in parallel, so that the influence of depth density and accuracy on every
+downstream stage --- detection-independent lifting quality and, ultimately,
+cooperative recall and localisation --- can be attributed rather than presupposed.
+
+Two scope conditions bound the interpretation of the results in Chapter~5 and are
+stated here in the interest of honesty about what the setup can and cannot establish.
+First, the cooperative evaluation rests on a \emph{single} scenario --- one
+\texttt{Town10HD} intersection with a leader--follower pair and nine Car-only
+cooperative-GT vehicles within 40~m --- so it is a characterised feasibility study,
+not a multi-scenario benchmark. Second, the leader--follower geometry fixes the two
+agents at a narrow angular separation from the shared cars; testing the
+triangulation regime, in which two near-perpendicular viewpoints could tighten depth,
+would require a different scenario geometry. These conditions do not weaken the
+measurement; they delimit precisely the operating regime within which it is valid.
+
+\bigskip
+\noindent This chapter has specified the experimental setup: a deterministic, CPU-only,
+configuration-driven, MLflow-tracked implementation; the KITTI benchmark suite as the
+real-image source for the single-vehicle chain (object split for depth and detection,
+tracking split for lifting); the CARLA \texttt{Town10HD} leader--follower scenario as
+the simultaneous, occlusion-truthful multi-agent source for cooperative fusion; the
+concrete per-stage model and algorithm configurations; and the metric definitions
+against which each stage is scored, from per-pixel disparity error through cooperative
+recall, localisation, and corroboration. With the setup established, Chapter~5
+presents the stagewise validation results and the characterisation of the cooperative
+localisation dynamics that this framework was built to measure.
