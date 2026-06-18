@@ -32,7 +32,10 @@ per_method_overrides:
     crop_top_frac: 1.0              # no crop
     min_depth_m: null
   waft:
-    depth_sampling: percentile_35   # dense map, mid-low percentile
+    depth_sampling: percentile_50   # dense map; balanced KITTI/CARLA optimum.
+                                    # (was p35 — too low: over-estimated depth on
+                                    # the full 21-seq + CARLA data; see
+                                    # experiments/percentile_choice.md §9, 2026-06-18)
     crop_top_frac: 0.40            # top 40% of box removes road/ground below
     min_depth_m: 6.0               # gate out pixels closer than 6m (road surface)
 

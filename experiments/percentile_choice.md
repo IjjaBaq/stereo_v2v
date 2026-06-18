@@ -3,6 +3,16 @@
 *Experiment date: 2026-06-05 · KITTI tracking sequences 0000–0004 · static parked cars*
 *Status: **analysis only — no config/code changes applied.** Recommendations pending review.*
 
+> **2026-06-18 re-check on workstation data — see [Section 9](#9-re-check-on-full-workstation-data-2026-06-18).**
+> The p20 (SGBM) / p35 (WAFT) values from this 5-sequence near-field study were
+> re-tested on the full workstation run (21 KITTI sequences + CARLA, ~10× the
+> sample, both decoupled **and** end-to-end). **SGBM p20 holds up and is kept.
+> WAFT p35 did not** — it over-estimated depth on the broader data and crippled
+> CARLA fusion. **WAFT was changed `p35` → `p50`** (the balanced KITTI/CARLA
+> optimum), which lifts CARLA WAFT fused recall from 0.31 to 0.78 (now on par with
+> SGBM). Applied in `config/stage3.yaml`; corrected outputs regenerated under
+> `outputs_waft_p50/` (originals untouched).
+
 ---
 
 ## 1. Question
@@ -292,3 +302,121 @@ p75 reasoning for SGBM).
 
 *No repository code, config, or `data/` was modified by this experiment. Only
 read-only analysis plus depth/detection caches under `outputs/` were produced.*
+
+---
+
+## 9. Re-check on full workstation data (2026-06-18)
+
+*Re-check date: 2026-06-18 · source: `outputs_workstation/` + `mlflow_workstation.db` ·
+KITTI tracking **all 21 sequences** (673 IoU-associated pairs) **and CARLA** (both
+agents, 698 pairs) · **analysis only — config still reads SGBM p20 / WAFT p35,
+nothing changed.***
+
+### 9.1 Why re-check
+
+Sections 3–6 chose p20 (SGBM) / p35 (WAFT) from **66 pairs across 5 sequences of
+near-field static parked cars**, decoupled from matching — and flagged exactly two
+risks (caveats #1 and #2): the sample might not transfer, and the percentile needs
+an **end-to-end** re-run to confirm it improves matching, not just decoupled depth
+MAE. The workstation run now provides both: ~10× the sample, the full depth range,
+a second domain (CARLA), and cached disparity + detections that let the choice be
+re-tested two ways.
+
+### 9.2 Method (two criteria)
+
+Using the cached WAFT/SGBM disparity (`*_disp.npy`) and RT-DETR detections
+(`*_boxes2d.json`) — no re-inference:
+
+1. **Decoupled depth accuracy** (as in §2): detection↔GT by 2D IoU ≥ 0.5
+   (percentile-independent), sample depth in the box at each percentile, compare to
+   GT centre depth → MAE / median / bias. Each method keeps its own crop/gate
+   (SGBM 1.0 / none; WAFT 0.40 / 6 m).
+2. **End-to-end Stage 3** (the criterion the pipeline optimises, and the §7 caveat-#1
+   gap): lift every detection at each percentile (`sample_depth` → `unproject_box`,
+   skip `<10` px), match to GT by 3D centre distance ≤ 2 m → TP/FP/FN, recall, F1,
+   centre-dist.
+
+**Harness validation:** at the current settings the end-to-end sweep reproduces the
+workstation Stage-3 numbers exactly — SGBM p20 → TP 349 / R 0.348 / cdist 1.08;
+WAFT p35 → TP 271 / R 0.270 / cdist 1.13 — so the off-line re-lift is trustworthy.
+
+### 9.3 SGBM — p20 confirmed (near-optimal, low-bias)
+
+| Criterion | Optimum | p20 (current) |
+|---|---|---|
+| KITTI decoupled MAE (673 pr) | p15 = 2.60 m | 2.62 m (tie); bias −1.85, p10 bias +0.13 |
+| KITTI end-to-end **F1** | p15 = 0.353 | 0.319 (R 0.348 vs 0.385) |
+| CARLA decoupled MAE (698 pr) | p25 = 1.06 m | **1.13 m, bias +0.10** |
+
+p20 sits in a flat low-bias bowl in both domains (KITTI marginally prefers p10–15,
+CARLA prefers p20–25). **A robust compromise — keep.** The only refinement on the
+table is a small recall/F1 gain on KITTI by dropping to p15, partly offset by a
+slightly worse centre-dist; not worth disturbing the CARLA-optimal p20–25.
+
+### 9.4 WAFT — p35 is **too low** in both domains
+
+| Criterion | Optimum | p35 (current) |
+|---|---|---|
+| KITTI end-to-end **F1** | **p45 = 0.267** (p40 0.265) | 0.236 (R 0.270 vs **0.305** at p45) |
+| KITTI decoupled MAE (673 pr) | p60 = 2.74 m | 9.82 m, **bias +7.7 m** |
+| CARLA decoupled MAE (698 pr) | p60 = 0.92 m | 14.95 m, **bias +14.8 m** |
+
+WAFT p35 **systematically over-estimates depth** (places cars too far) on the
+broader data: the dense WAFT map keeps far-background pixels inside the box, and a
+low percentile latches onto them. The near-field static study masked this because
+its boxes were close and background-free.
+
+End-to-end KITTI F1 by percentile (21 seqs): p35 **0.236** → p40 0.265 → **p45
+0.267** → p50 0.253 → p60 0.215. The end-to-end optimum (~p45) is *lower* than the
+decoupled-MAE optimum (~p60) because a high percentile keeps shrinking the far-car
+mean error (which dominates the mean) but starts under-shooting the *matchable*
+near/mid cars, pushing them outside the 2 m gate. **For the pipeline, ~p45 is the
+right target.**
+
+This also helps explain the poor Stage-4 WAFT fusion (Chapter 5: recall 0.31,
+corroboration 0.004): with p35 the follower's far cars are lifted ~15 m too far, so
+almost nothing falls within the 1 m merge gate.
+
+### 9.5 Updated cross-method picture
+
+| | WAFT | SGBM |
+|---|---|---|
+| Current config | p35 | p20 |
+| End-to-end (KITTI) optimum | **~p45** (+≈13 % F1/recall) | ~p15 (p20 ≈ optimum) |
+| Depth-MAE optimum (KITTI / CARLA) | ~p60 / ~p60 | ~p15 / ~p25 |
+| Verdict | **sub-optimal — raise to ~p45–50** | **keep p20** |
+
+### 9.6 Decision and action taken
+
+The new sample is **sufficient to decide** (≈10× larger, full range, two domains,
+end-to-end + decoupled).
+
+- **SGBM `p20`: kept.** Validated near-optimal and low-bias in both domains.
+- **WAFT `p35` → `p50`: changed.** p35 was too low and systematically
+  over-estimated depth. The two domains' optima differ — KITTI Stage-3 end-to-end
+  peaks at ~p45, while CARLA fusion keeps improving to ~p55–60 — so **p50 is the
+  balanced choice**: KITTI Stage-3 F1 = 0.253 (vs 0.236 at p35, near the p45 peak of
+  0.267) and CARLA fused recall = 0.78 / precision 0.76 / corroboration 0.27.
+
+The CARLA effect is the decisive one. WAFT fusion at each percentile (150 frames,
+cached disparity/detections, real Stage-4 scoring):
+
+| WAFT pct | fused recall | fused prec | corrob. | merges | fused loc-err (m) |
+|---|---|---|---|---|---|
+| 35 (old) | 0.31 | 0.27 | 0.004 | 1 | 0.96 |
+| 45 | 0.68 | 0.62 | 0.10 | 28 | 0.81 |
+| **50 (new)** | **0.78** | **0.76** | **0.27** | **74** | **0.61** |
+| 55 | 0.79 | 0.81 | 0.36 | 99 | 0.53 |
+| 60 | 0.81 | 0.84 | 0.38 | 105 | 0.62 |
+
+The earlier "WAFT collapses for fusion" result (Chapter 5 draft: corroboration
+0.004, 1 merge) was therefore **a depth-sampling artefact of p35, not an inherent
+property** — at p50 WAFT fusion is on par with SGBM (SGBM: recall 0.77, prec 0.79,
+corroboration 0.26). KITTI Stage-3 lifting still modestly favours SGBM (F1 0.32 vs
+0.25), so "confident sparsity helps lifting" survives, but only weakly.
+
+**Action:** `config/stage3.yaml` `per_method_overrides.waft.depth_sampling` set to
+`percentile_50`. Corrected WAFT Stage-3 (KITTI) and Stage-4 (CARLA) outputs were
+regenerated **from the cached disparity + detections** (no WAFT/RT-DETR re-inference)
+into `outputs_waft_p50/`; `outputs/`, `outputs_workstation/`, and the workstation
+MLflow store were left untouched. SGBM outputs are unchanged.

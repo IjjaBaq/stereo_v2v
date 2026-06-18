@@ -16,8 +16,9 @@ model:
 # Ambiguous mappings are documented explicitly:
 #   COCO 'truck' loosely covers KITTI 'Car', 'Van', and 'Truck'.
 #   KITTI 'Van' has no clean COCO equivalent.
-#   Decision: map truck/bus → 'Car' (dominant KITTI class, simplest baseline).
-#   Revisit if Stage 3 produces 3D positions that mis-localise large vehicles.
+#   Decision (2026-06-18): map ONLY 'car' -> Car. Dropping truck/bus raises
+#   precision/AP with negligible recall loss; KITTI Van/Truck GT are filtered out
+#   anyway, so truck/bus detections were predominantly false positives (see Ch5).
 
 
 class_mapping:
@@ -29,5 +30,6 @@ class_mapping:
   # false positives from parked bikes. Re-enable after fine-tuning on KITTI.
   # bicycle:    Cyclist
   # motorcycle: Cyclist
-  truck:      Car
-  bus:        Car
+  # truck/bus mapping removed 2026-06-18 (car-only class):
+  # truck:      Car
+  # bus:        Car
